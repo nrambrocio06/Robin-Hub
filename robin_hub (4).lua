@@ -139,6 +139,7 @@ local lastScriptPos = nil
 local lastScriptTime = 0
 _G.RobinManualUntil = 0
 _G.RobinRaidMoved = false
+_G.RobinDungeonWaiting = false
 
 local function tpTo(root, cf)
   root.CFrame = cf
@@ -489,7 +490,7 @@ end
 task.spawn(function()
   while true do
     if _G.ShazeFarm.Enabled and _G.ShazeFarm.CurrentWorld ~= "" then
-      if tick() >= (_G.RobinManualUntil or 0) and not f11() and not f12() then
+      if tick() >= (_G.RobinManualUntil or 0) and not f11() and not f12() and not _G.RobinDungeonWaiting then
         local v12 = f6()
 
         if v12 then
@@ -939,6 +940,12 @@ task.spawn(function()
   local v18 = 1
   local v19 = 0
   local dNoEnemySince = nil
+  -- Waiting room: after joining, the game moves us to the dungeon and it needs ~30s to start.
+  -- While waiting we must NOT re-send the join and the world farm must not drag us away.
+  local joinPos = nil
+  local joinTime = 0
+  local waitPos = nil
+  local waitStart = 0
 
   while true do
     if _G.AutoDungeon.Enabled then
@@ -949,6 +956,9 @@ task.spawn(function()
 
         if #v21 > 0 then
           dNoEnemySince = nil
+          _G.RobinDungeonWaiting = false -- dungeon started
+          joinPos = nil
+          waitPos = nil
 
           if v18 > #v21 then
             v18 = 1
@@ -979,9 +989,30 @@ task.spawn(function()
 
           local v24 = tick()
 
-          -- ask to enter again only when we are not in the middle of a run
-          if not _G.AutoDungeon.Moved and v24 - v19 >= _G.AutoDungeon.Interval then
+          -- joined: the game teleported us far from where we pressed join = we are in the
+          -- dungeon waiting room (countdown before it starts)
+          if joinPos and not _G.RobinDungeonWaiting and v24 - joinTime < 20
+            and (v20.Position - joinPos).Magnitude > 100 then
+            _G.RobinDungeonWaiting = true
+            waitPos = v20.Position
+            waitStart = v24
+            joinPos = nil
+          end
+
+          if _G.RobinDungeonWaiting then
+            -- stop waiting if the dungeon never starts (90s) or we got moved away again
+            if v24 - waitStart > 90 or (waitPos and (v20.Position - waitPos).Magnitude > 150) then
+              _G.RobinDungeonWaiting = false
+              waitPos = nil
+            end
+          end
+
+          -- ask to enter again only when we are not in the middle of a run or waiting to start
+          if not _G.AutoDungeon.Moved and not _G.RobinDungeonWaiting
+            and v24 - v19 >= _G.AutoDungeon.Interval then
             v19 = v24
+            joinPos = v20.Position
+            joinTime = v24
             f16()
           end
 
@@ -992,6 +1023,9 @@ task.spawn(function()
       end
     else
       v18 = 1
+      _G.RobinDungeonWaiting = false
+      joinPos = nil
+      waitPos = nil
       task.wait(0.3)
     end
   end
