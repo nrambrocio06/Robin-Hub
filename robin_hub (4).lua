@@ -101,6 +101,7 @@ _G.AutoRaid = {
   Speed = 0.1,
   StartMode = "wave1",
   RestartDelay = 5,
+  LeaveForKusuke = true, -- leave the raid (only the raid) when Kusuke spawns so the farm can kill it
 }
 
 _G.AutoLeaveRaid = {
@@ -373,6 +374,30 @@ local function f12()
   return false
 end
 
+-- Kusuke (World4 boss). Returns its root part while it is alive and attackable, else nil.
+_G.RobinFindKusuke = function()
+  local world = workspace:FindFirstChild("World4")
+  local folder = world and (world:FindFirstChild("Enemy") or world:FindFirstChild("Enemies") or world:FindFirstChild("Mobs"))
+
+  if not folder then
+    return nil
+  end
+
+  for _, mob in ipairs(folder:GetChildren()) do
+    if mob:IsA("Model") and f9(mob.Name, "Kusuke") then
+      local hrp = mob:FindFirstChild("HumanoidRootPart") or mob.PrimaryPart or mob:FindFirstChildWhichIsA("BasePart", true)
+      local hum = mob:FindFirstChildOfClass("Humanoid")
+      local alive = not hum or hum.Health > 0
+
+      if hrp and alive and mob:GetAttribute("Attackable") ~= false then
+        return hrp
+      end
+    end
+  end
+
+  return nil
+end
+
 -- ===== world teleport =====
 -- Used when the selected mobs can't be found, i.e. you're not in that world.
 -- Order: your own hook -> a spawn you saved. It never guesses a position.
@@ -489,13 +514,17 @@ end
 task.spawn(function()
   while true do
     if _G.ShazeFarm.Enabled and _G.ShazeFarm.CurrentWorld ~= "" then
-      if tick() >= (_G.RobinManualUntil or 0) and not f11() and not f12() then
+      local kus = _G.AutoRaid.Enabled and _G.AutoRaid.LeaveForKusuke ~= false and _G.RobinFindKusuke()
+
+      if tick() >= (_G.RobinManualUntil or 0) and not f11() and (kus or not f12()) then
         local v12 = f6()
 
         if v12 then
           local v13 = f5(_G.ShazeFarm.CurrentWorld)
 
-          if #v13 > 0 then
+          if kus then
+            tpTo(v12, kus.CFrame + Vector3.new(0, 3, 4))
+          elseif #v13 > 0 then
             local v14 = f10(_G.ShazeFarm.CurrentWorld, v13)
 
             if v14 then
@@ -1127,104 +1156,117 @@ local function f19()
   return bestList or {}
 end
 
+-- Auto raid: only opens/joins the raid. It never teleports you (no jumping between enemies)
+-- and never moves you back to a saved spot, so you stay wherever the raid spawns you.
 task.spawn(function()
-  local v26 = 1
   local lastOpen = 0
+  local notInRaidSince = nil
   local noEnemySince = nil
+  local lastRaidPos = nil
+  local lastKusukeLeave = 0
   local lastStatus = 0
+
+  -- true if any raid enemy is close to us (so it is OUR raid, not someone else's far away)
+  local function enemyNearMe(myPos)
+    for _, e in ipairs(f19()) do
+      if e.Parent and (e.Position - myPos).Magnitude < 400 then
+        return true
+      end
+    end
+
+    return false
+  end
 
   while true do
     if _G.AutoRaid.Enabled then
-      local v27 = f6()
+      local myRoot = f6()
 
-      if v27 then
-        local v28 = f19()
+      if myRoot then
+        -- are we inside a raid? (RaidHUD can stay in PlayerGui when we are not, so the
+        -- wave number must be really visible and contain a digit)
+        local pg = localPlayer:FindFirstChild("PlayerGui")
+        local hud = pg and pg:FindFirstChild("RaidHUD")
+        local inRaid = false
 
-        if #v28 > 0 then
-          noEnemySince = nil
+        if hud then
+          local th = hud:FindFirstChild("TopHolder")
+          local wv = th and th:FindFirstChild("Wave")
+          local am = wv and wv:FindFirstChild("Amount")
 
-          if v26 > #v28 then
-            v26 = 1
+          if am and guiShown(am) and tostring(am.Text):match("%d") then
+            inRaid = true
           end
+        end
 
-          local v29 = v28[v26]
+        local sinceOpen = tick() - lastOpen
+        local canOpen = false
 
-          if v29 and v29.Parent then
-            tpTo(v27, v29.CFrame + Vector3.new(0, 3, 4))
-            _G.RobinRaidMoved = true
-          end
+        if inRaid then
+          notInRaidSince = nil
 
-          v26 = v26 + 1
-        else
-          v26 = 1
-          noEnemySince = noEnemySince or tick()
-
-          -- Only open the raid when we are NOT already inside one (RaidHUD showing).
-          -- Opening again while inside (or while joining someone else's raid) kicks you out
-          -- and restarts it, which looked like "enter, leave, enter, leave".
-          local pg = localPlayer:FindFirstChild("PlayerGui")
-          local hud = pg and pg:FindFirstChild("RaidHUD")
-          -- the HUD can stay in PlayerGui when you are NOT in a raid, so it only counts
-          -- when its wave number is really visible and has a number in it
-          local inRaid = false
-
-          if hud then
-            local th = hud:FindFirstChild("TopHolder")
-            local wv = th and th:FindFirstChild("Wave")
-            local am = wv and wv:FindFirstChild("Amount")
-
-            if am and guiShown(am) and tostring(am.Text):match("%d") then
-              inRaid = true
-            end
-          end
-
-          local sinceOpen = tick() - lastOpen
-          local idle = tick() - noEnemySince
-          local canOpen
-
-          -- Go back to the saved spot ONLY if the script took us into a raid and it is over
-          -- (left via auto leave, or no enemies for a while). Never while just walking the map.
-          if _G.RobinRaidMoved then
-            local recentLeave = tick() - (_G._sonLeaveZamani or 0) < 20
-            local need = recentLeave and 1.5 or (inRaid and 30 or 8)
-
-            if idle >= need then
-              _G.RobinRaidMoved = false
-              returnToSaved()
-            end
-          end
-
-          if _G.RobinRaidMoved then
-            canOpen = false -- still in the middle of a raid
-          elseif inRaid then
-            -- inside a raid: never re-open, only as a last resort after a long dead time
-            canOpen = idle >= 45 and sinceOpen >= 45
+          if enemyNearMe(myRoot.Position) then
+            noEnemySince = nil
+            lastRaidPos = myRoot.Position
           else
-            -- not in a raid: give the last open/join plenty of time to load
-            canOpen = sinceOpen >= math.max(_G.AutoRaid.RestartDelay or 5, 15)
+            noEnemySince = noEnemySince or tick()
           end
 
-          if not canOpen and tick() - lastStatus > 10 then
-            lastStatus = tick()
-            warn("[RobinHub] raid: waiting (inRaid=" .. tostring(inRaid) .. ", moved=" .. tostring(_G.RobinRaidMoved)
-              .. ", sinceOpen=" .. math.floor(sinceOpen) .. "s, idle=" .. math.floor(idle) .. "s)")
-          end
+          local idle = noEnemySince and (tick() - noEnemySince) or 0
+          -- we were fighting in the raid and are now far away from it = we left (manual leave)
+          local left = lastRaidPos ~= nil and (myRoot.Position - lastRaidPos).Magnitude > 150
 
-          if canOpen then
-            warn("[RobinHub] raid: opening (inRaid=" .. tostring(inRaid) .. ", idle=" .. math.floor(idle) .. "s)")
+          canOpen = (left and idle >= 3 and sinceOpen >= 8)
+            or (idle >= 45 and sinceOpen >= 45)
+        else
+          noEnemySince = nil
+          lastRaidPos = nil
+          notInRaidSince = notInRaidSince or tick()
 
-            if f18(_G.AutoRaid.RaidType, _G.AutoRaid.StartMode) then
-              lastOpen = tick()
+          -- not in a raid for a few seconds in a row: open / join one
+          canOpen = (tick() - notInRaidSince) >= 5
+            and sinceOpen >= math.max(_G.AutoRaid.RestartDelay or 5, 15)
+        end
+
+        -- Kusuke is up: leave the raid (raid only) and don't join another until it is dead.
+        -- Only when the farm is on, because the farm is what goes and kills it.
+        if _G.AutoRaid.LeaveForKusuke ~= false and _G.ShazeFarm.Enabled and _G.RobinFindKusuke() then
+          canOpen = false
+
+          if inRaid and tick() - lastKusukeLeave > 6 then
+            lastKusukeLeave = tick()
+
+            local r = replicatedStorage:FindFirstChild("Remotes")
+            local rr = r and r:FindFirstChild("Raids")
+            local lv = rr and rr:FindFirstChild("Leave")
+
+            if lv then
+              warn("[RobinHub] raid: Kusuke spawned, leaving the raid")
+              pcall(function() lv:FireServer() end)
+              _G._sonLeaveZamani = tick()
+              task.delay(3, function() _G.RobinManualUntil = 0 end)
             end
           end
+        end
 
-          task.wait(1)
+        if not canOpen and tick() - lastStatus > 10 then
+          lastStatus = tick()
+          warn("[RobinHub] raid: waiting (inRaid=" .. tostring(inRaid) .. ", sinceOpen=" .. math.floor(sinceOpen) .. "s)")
+        end
+
+        if canOpen then
+          warn("[RobinHub] raid: opening (inRaid=" .. tostring(inRaid) .. ")")
+
+          if f18(_G.AutoRaid.RaidType, _G.AutoRaid.StartMode) then
+            lastOpen = tick()
+            lastRaidPos = nil
+            noEnemySince = nil
+          end
         end
       end
 
-      task.wait(_G.AutoRaid.Speed)
+      task.wait(1)
     else
-      v26 = 1
+      notInRaidSince = nil
       noEnemySince = nil
       _G.RobinRaidMoved = false
       task.wait(0.3)
@@ -1591,6 +1633,7 @@ do
     { "AutoRaid", "RaidType", "string", { "LeafVillageRaid", "MundoRaid" } },
     { "AutoRaid", "StartMode", "string", { "wave1", "maxwave" } },
     { "AutoRaid", "Speed", "number", 0.02, 0.5 },
+    { "AutoRaid", "LeaveForKusuke", "boolean" },
 
     { "AutoLeaveRaid", "Enabled", "boolean" },
     { "AutoLeaveRaid", "TargetWave", "number", 1, 1000, true },
@@ -2859,6 +2902,32 @@ f28(f1("Frame", {
   BackgroundTransparency = 1,
   Parent = parent21,
 }), _G.AutoLeaveRaid.AutoRearm ~= false, function(autoRearm) _G.AutoLeaveRaid.AutoRearm = autoRearm end)
+
+do
+  local kRow = f1("Frame", {
+    Size = UDim2.new(1, 0, 0, 30),
+    BackgroundTransparency = 1,
+    Parent = v90,
+  })
+
+  f1("TextLabel", {
+    Size = UDim2.new(1, -80, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "Leave raid when Kusuke spawns",
+    Font = gothamBold,
+    TextSize = 12,
+    TextColor3 = v2.textMute,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = kRow,
+  })
+
+  f28(f1("Frame", {
+    Size = UDim2.new(0, 50, 1, 0),
+    Position = UDim2.new(1, -50, 0, 0),
+    BackgroundTransparency = 1,
+    Parent = kRow,
+  }), _G.AutoRaid.LeaveForKusuke ~= false, function(on) _G.AutoRaid.LeaveForKusuke = on end)
+end
 
 local parent22 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 24),
