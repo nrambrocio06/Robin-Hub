@@ -12,25 +12,25 @@ local localPlayer = players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui")
 
 local v2 = {
-  bg = Color3.fromRGB(0, 0, 0),
-  panel = Color3.fromRGB(4, 4, 4),
-  border = Color3.fromRGB(26, 26, 26),
-  text = Color3.fromRGB(210, 210, 210),
-  textDim = Color3.fromRGB(80, 80, 80),
-  textMute = Color3.fromRGB(130, 130, 130),
+  bg = Color3.fromRGB(20, 20, 20),
+  panel = Color3.fromRGB(28, 28, 28),
+  border = Color3.fromRGB(50, 50, 50),
+  text = Color3.fromRGB(240, 240, 240),
+  textDim = Color3.fromRGB(150, 150, 150),
+  textMute = Color3.fromRGB(190, 190, 190),
   accent = Color3.fromRGB(255, 64, 64),
-  accentDim = Color3.fromRGB(26, 0, 0),
-  white = Color3.fromRGB(235, 235, 235),
+  accentDim = Color3.fromRGB(45, 20, 20),
+  white = Color3.fromRGB(255, 255, 255),
   boss = Color3.fromRGB(255, 180, 0),
   bossDim = Color3.fromRGB(30, 20, 0),
 }
 
-local gothamMedium = Enum.Font.GothamMedium
-local gothamBold = Enum.Font.GothamBold
+local gothamMedium = Enum.Font.Code
+local gothamBold = Enum.Font.Code
 local f1
 
 local function f2(parent, p1)
-  return f1("UICorner", { CornerRadius = UDim.new(0, p1 or 0), Parent = parent })
+  return f1("UICorner", { CornerRadius = UDim.new(0, 0), Parent = parent })
 end
 
 function f1(p2, p3, p4)
@@ -101,7 +101,6 @@ _G.AutoRaid = {
   Speed = 0.1,
   StartMode = "wave1",
   RestartDelay = 5,
-  LeaveForKusuke = true, -- leave the raid (only the raid) when Kusuke spawns so the farm can kill it
 }
 
 _G.AutoLeaveRaid = {
@@ -374,30 +373,6 @@ local function f12()
   return false
 end
 
--- Kusuke (World4 boss). Returns its root part while it is alive and attackable, else nil.
-_G.RobinFindKusuke = function()
-  local world = workspace:FindFirstChild("World4")
-  local folder = world and (world:FindFirstChild("Enemy") or world:FindFirstChild("Enemies") or world:FindFirstChild("Mobs"))
-
-  if not folder then
-    return nil
-  end
-
-  for _, mob in ipairs(folder:GetChildren()) do
-    if mob:IsA("Model") and f9(mob.Name, "Kusuke") then
-      local hrp = mob:FindFirstChild("HumanoidRootPart") or mob.PrimaryPart or mob:FindFirstChildWhichIsA("BasePart", true)
-      local hum = mob:FindFirstChildOfClass("Humanoid")
-      local alive = not hum or hum.Health > 0
-
-      if hrp and alive and mob:GetAttribute("Attackable") ~= false then
-        return hrp
-      end
-    end
-  end
-
-  return nil
-end
-
 -- ===== world teleport =====
 -- Used when the selected mobs can't be found, i.e. you're not in that world.
 -- Order: your own hook -> a spawn you saved. It never guesses a position.
@@ -514,17 +489,13 @@ end
 task.spawn(function()
   while true do
     if _G.ShazeFarm.Enabled and _G.ShazeFarm.CurrentWorld ~= "" then
-      local kus = _G.AutoRaid.Enabled and _G.AutoRaid.LeaveForKusuke ~= false and _G.RobinFindKusuke()
-
-      if tick() >= (_G.RobinManualUntil or 0) and not f11() and (kus or not f12()) then
+      if tick() >= (_G.RobinManualUntil or 0) and not f11() and not f12() then
         local v12 = f6()
 
         if v12 then
           local v13 = f5(_G.ShazeFarm.CurrentWorld)
 
-          if kus then
-            tpTo(v12, kus.CFrame + Vector3.new(0, 3, 4))
-          elseif #v13 > 0 then
+          if #v13 > 0 then
             local v14 = f10(_G.ShazeFarm.CurrentWorld, v13)
 
             if v14 then
@@ -1156,117 +1127,104 @@ local function f19()
   return bestList or {}
 end
 
--- Auto raid: only opens/joins the raid. It never teleports you (no jumping between enemies)
--- and never moves you back to a saved spot, so you stay wherever the raid spawns you.
 task.spawn(function()
+  local v26 = 1
   local lastOpen = 0
-  local notInRaidSince = nil
   local noEnemySince = nil
-  local lastRaidPos = nil
-  local lastKusukeLeave = 0
   local lastStatus = 0
-
-  -- true if any raid enemy is close to us (so it is OUR raid, not someone else's far away)
-  local function enemyNearMe(myPos)
-    for _, e in ipairs(f19()) do
-      if e.Parent and (e.Position - myPos).Magnitude < 400 then
-        return true
-      end
-    end
-
-    return false
-  end
 
   while true do
     if _G.AutoRaid.Enabled then
-      local myRoot = f6()
+      local v27 = f6()
 
-      if myRoot then
-        -- are we inside a raid? (RaidHUD can stay in PlayerGui when we are not, so the
-        -- wave number must be really visible and contain a digit)
-        local pg = localPlayer:FindFirstChild("PlayerGui")
-        local hud = pg and pg:FindFirstChild("RaidHUD")
-        local inRaid = false
+      if v27 then
+        local v28 = f19()
 
-        if hud then
-          local th = hud:FindFirstChild("TopHolder")
-          local wv = th and th:FindFirstChild("Wave")
-          local am = wv and wv:FindFirstChild("Amount")
-
-          if am and guiShown(am) and tostring(am.Text):match("%d") then
-            inRaid = true
-          end
-        end
-
-        local sinceOpen = tick() - lastOpen
-        local canOpen = false
-
-        if inRaid then
-          notInRaidSince = nil
-
-          if enemyNearMe(myRoot.Position) then
-            noEnemySince = nil
-            lastRaidPos = myRoot.Position
-          else
-            noEnemySince = noEnemySince or tick()
-          end
-
-          local idle = noEnemySince and (tick() - noEnemySince) or 0
-          -- we were fighting in the raid and are now far away from it = we left (manual leave)
-          local left = lastRaidPos ~= nil and (myRoot.Position - lastRaidPos).Magnitude > 150
-
-          canOpen = (left and idle >= 3 and sinceOpen >= 8)
-            or (idle >= 45 and sinceOpen >= 45)
-        else
+        if #v28 > 0 then
           noEnemySince = nil
-          lastRaidPos = nil
-          notInRaidSince = notInRaidSince or tick()
 
-          -- not in a raid for a few seconds in a row: open / join one
-          canOpen = (tick() - notInRaidSince) >= 5
-            and sinceOpen >= math.max(_G.AutoRaid.RestartDelay or 5, 15)
-        end
+          if v26 > #v28 then
+            v26 = 1
+          end
 
-        -- Kusuke is up: leave the raid (raid only) and don't join another until it is dead.
-        -- Only when the farm is on, because the farm is what goes and kills it.
-        if _G.AutoRaid.LeaveForKusuke ~= false and _G.ShazeFarm.Enabled and _G.RobinFindKusuke() then
-          canOpen = false
+          local v29 = v28[v26]
 
-          if inRaid and tick() - lastKusukeLeave > 6 then
-            lastKusukeLeave = tick()
+          if v29 and v29.Parent then
+            tpTo(v27, v29.CFrame + Vector3.new(0, 3, 4))
+            _G.RobinRaidMoved = true
+          end
 
-            local r = replicatedStorage:FindFirstChild("Remotes")
-            local rr = r and r:FindFirstChild("Raids")
-            local lv = rr and rr:FindFirstChild("Leave")
+          v26 = v26 + 1
+        else
+          v26 = 1
+          noEnemySince = noEnemySince or tick()
 
-            if lv then
-              warn("[RobinHub] raid: Kusuke spawned, leaving the raid")
-              pcall(function() lv:FireServer() end)
-              _G._sonLeaveZamani = tick()
-              task.delay(3, function() _G.RobinManualUntil = 0 end)
+          -- Only open the raid when we are NOT already inside one (RaidHUD showing).
+          -- Opening again while inside (or while joining someone else's raid) kicks you out
+          -- and restarts it, which looked like "enter, leave, enter, leave".
+          local pg = localPlayer:FindFirstChild("PlayerGui")
+          local hud = pg and pg:FindFirstChild("RaidHUD")
+          -- the HUD can stay in PlayerGui when you are NOT in a raid, so it only counts
+          -- when its wave number is really visible and has a number in it
+          local inRaid = false
+
+          if hud then
+            local th = hud:FindFirstChild("TopHolder")
+            local wv = th and th:FindFirstChild("Wave")
+            local am = wv and wv:FindFirstChild("Amount")
+
+            if am and guiShown(am) and tostring(am.Text):match("%d") then
+              inRaid = true
             end
           end
-        end
 
-        if not canOpen and tick() - lastStatus > 10 then
-          lastStatus = tick()
-          warn("[RobinHub] raid: waiting (inRaid=" .. tostring(inRaid) .. ", sinceOpen=" .. math.floor(sinceOpen) .. "s)")
-        end
+          local sinceOpen = tick() - lastOpen
+          local idle = tick() - noEnemySince
+          local canOpen
 
-        if canOpen then
-          warn("[RobinHub] raid: opening (inRaid=" .. tostring(inRaid) .. ")")
+          -- Go back to the saved spot ONLY if the script took us into a raid and it is over
+          -- (left via auto leave, or no enemies for a while). Never while just walking the map.
+          if _G.RobinRaidMoved then
+            local recentLeave = tick() - (_G._sonLeaveZamani or 0) < 20
+            local need = recentLeave and 1.5 or (inRaid and 30 or 8)
 
-          if f18(_G.AutoRaid.RaidType, _G.AutoRaid.StartMode) then
-            lastOpen = tick()
-            lastRaidPos = nil
-            noEnemySince = nil
+            if idle >= need then
+              _G.RobinRaidMoved = false
+              returnToSaved()
+            end
           end
+
+          if _G.RobinRaidMoved then
+            canOpen = false -- still in the middle of a raid
+          elseif inRaid then
+            -- inside a raid: never re-open, only as a last resort after a long dead time
+            canOpen = idle >= 45 and sinceOpen >= 45
+          else
+            -- not in a raid: give the last open/join plenty of time to load
+            canOpen = sinceOpen >= math.max(_G.AutoRaid.RestartDelay or 5, 15)
+          end
+
+          if not canOpen and tick() - lastStatus > 10 then
+            lastStatus = tick()
+            warn("[RobinHub] raid: waiting (inRaid=" .. tostring(inRaid) .. ", moved=" .. tostring(_G.RobinRaidMoved)
+              .. ", sinceOpen=" .. math.floor(sinceOpen) .. "s, idle=" .. math.floor(idle) .. "s)")
+          end
+
+          if canOpen then
+            warn("[RobinHub] raid: opening (inRaid=" .. tostring(inRaid) .. ", idle=" .. math.floor(idle) .. "s)")
+
+            if f18(_G.AutoRaid.RaidType, _G.AutoRaid.StartMode) then
+              lastOpen = tick()
+            end
+          end
+
+          task.wait(1)
         end
       end
 
-      task.wait(1)
+      task.wait(_G.AutoRaid.Speed)
     else
-      notInRaidSince = nil
+      v26 = 1
       noEnemySince = nil
       _G.RobinRaidMoved = false
       task.wait(0.3)
@@ -1633,7 +1591,6 @@ do
     { "AutoRaid", "RaidType", "string", { "LeafVillageRaid", "MundoRaid" } },
     { "AutoRaid", "StartMode", "string", { "wave1", "maxwave" } },
     { "AutoRaid", "Speed", "number", 0.02, 0.5 },
-    { "AutoRaid", "LeaveForKusuke", "boolean" },
 
     { "AutoLeaveRaid", "Enabled", "boolean" },
     { "AutoLeaveRaid", "TargetWave", "number", 1, 1000, true },
@@ -1861,8 +1818,8 @@ local v36 = f1("Frame", {
 f3(v36, v2.border, 1)
 
 local v37 = f1("Frame", {
-  Size = UDim2.new(1, 0, 0, 40),
-  BackgroundColor3 = Color3.fromRGB(6, 6, 6),
+  Size = UDim2.new(1, 0, 0, 28),
+  BackgroundTransparency = 1,
   BorderSizePixel = 0,
   Parent = v36,
 })
@@ -1871,6 +1828,7 @@ f1("Frame", {
   Size = UDim2.new(1, 0, 0, 1),
   Position = UDim2.new(0, 0, 1, -1),
   BackgroundColor3 = v2.border,
+  BackgroundTransparency = 1,
   BorderSizePixel = 0,
   Parent = v37,
 })
@@ -1950,7 +1908,7 @@ local function f23(text, p16, p17, p18)
 
   v39.MouseEnter:Connect(function()
     v39.TextColor3 = p17
-    v39.BackgroundColor3 = Color3.fromRGB(10, 0, 0)
+    v39.BackgroundColor3 = Color3.fromRGB(45, 20, 20)
     v39.UIStroke.Color = p17
   end)
 
@@ -1969,15 +1927,15 @@ local v40 = f23("-", 0, v2.accent, function() end)
 local v41 = f23("x", 26, v2.accent, function() end)
 
 local parent7 = f1("Frame", {
-  Size = UDim2.new(1, 0, 1, -40),
-  Position = UDim2.new(0, 0, 0, 40),
+  Size = UDim2.new(1, -12, 1, -34),
+  Position = UDim2.new(0, 6, 0, 28),
   BackgroundTransparency = 1,
   Parent = v36,
 })
 
 local parent8 = f1("Frame", {
-  Size = UDim2.new(0, 130, 1, 0),
-  BackgroundColor3 = Color3.fromRGB(3, 3, 3),
+  Size = UDim2.new(1, 0, 0, 26),
+  BackgroundTransparency = 1,
   BorderSizePixel = 0,
   Parent = parent7,
 })
@@ -1986,6 +1944,7 @@ f1("Frame", {
   Size = UDim2.new(0, 1, 1, 0),
   Position = UDim2.new(1, -1, 0, 0),
   BackgroundColor3 = v2.border,
+  BackgroundTransparency = 1,
   BorderSizePixel = 0,
   Parent = parent8,
 })
@@ -1998,18 +1957,22 @@ local v42 = f1("Frame", {
 
 f1("UIListLayout", {
   Padding = UDim.new(0, 2),
+  FillDirection = Enum.FillDirection.Horizontal,
   SortOrder = Enum.SortOrder.LayoutOrder,
   Parent = v42,
 })
 
-f4(v42, 8)
+f1("UIPadding", { PaddingLeft = UDim.new(0, 2), Parent = v42 })
 
 local parent9 = f1("Frame", {
-  Size = UDim2.new(1, -130, 1, 0),
-  Position = UDim2.new(0, 130, 0, 0),
-  BackgroundTransparency = 1,
+  Size = UDim2.new(1, 0, 1, -26),
+  Position = UDim2.new(0, 0, 0, 26),
+  BackgroundColor3 = Color3.fromRGB(22, 22, 22),
+  BorderSizePixel = 0,
   Parent = parent7,
 })
+
+f3(parent9, v2.border, 1)
 
 local function f24(parent10, p19, p20, p21, p22, p23)
   local text2 = p23
@@ -2210,9 +2173,9 @@ local function f28(parent13, p30, p31)
   local v61 = p30 or false
 
   local v62 = f1("TextButton", {
-    Size = UDim2.fromOffset(38, 20),
-    Position = UDim2.new(1, -38, 0.5, -10),
-    BackgroundColor3 = v61 and v2.accentDim or Color3.fromRGB(12, 12, 12),
+    Size = UDim2.fromOffset(16, 16),
+    Position = UDim2.new(1, -16, 0.5, -8),
+    BackgroundColor3 = v61 and v2.accent or Color3.fromRGB(20, 20, 20),
     BorderSizePixel = 0,
     Text = "",
     AutoButtonColor = false,
@@ -2222,6 +2185,7 @@ local function f28(parent13, p30, p31)
   f3(v62, v61 and v2.accent or v2.border, 1)
 
   local v63 = f1("Frame", {
+    Visible = false,
     Size = UDim2.fromOffset(14, 14),
     Position = v61 and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7),
     BackgroundColor3 = v61 and v2.accent or Color3.fromRGB(51, 51, 51),
@@ -2231,7 +2195,7 @@ local function f28(parent13, p30, p31)
 
   local function f29(p32)
     v61 = p32
-    v62.BackgroundColor3 = v61 and v2.accentDim or Color3.fromRGB(12, 12, 12)
+    v62.BackgroundColor3 = v61 and v2.accent or Color3.fromRGB(20, 20, 20)
 
     v63.Position = v61 and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)
     v63.BackgroundColor3 = v61 and v2.accent or Color3.fromRGB(51, 51, 51)
@@ -2253,7 +2217,7 @@ local v65
 
 local function f30(p33, p34)
   local v66 = f1("TextButton", {
-    Size = UDim2.new(1, 0, 0, 38),
+    Size = UDim2.new(0, 86, 1, 0),
     BackgroundColor3 = v2.bg,
     BorderSizePixel = 0,
     Text = "",
@@ -2262,13 +2226,15 @@ local function f30(p33, p34)
   })
 
   local v67 = f1("Frame", {
-    Size = UDim2.new(0, 2, 1, 0),
+    Size = UDim2.new(1, 0, 0, 2),
+    Position = UDim2.new(0, 0, 1, -2),
     BackgroundColor3 = v2.border,
     BorderSizePixel = 0,
     Parent = v66,
   })
 
   local v68 = f1("Frame", {
+    Visible = false,
     Size = UDim2.fromOffset(5, 5),
     Position = UDim2.new(0, 16, 0.5, -2),
     BackgroundColor3 = v2.border,
@@ -2279,14 +2245,14 @@ local function f30(p33, p34)
   f2(v68, 3)
 
   local v69 = f1("TextLabel", {
-    Size = UDim2.new(1, -30, 1, 0),
-    Position = UDim2.new(0, 28, 0, 0),
+    Size = UDim2.new(1, 0, 1, 0),
+    Position = UDim2.new(0, 0, 0, 0),
     BackgroundTransparency = 1,
-    Text = string.upper(p34),
+    Text = p34,
     Font = gothamBold,
     TextSize = 11,
     TextColor3 = v2.textMute,
-    TextXAlignment = Enum.TextXAlignment.Left,
+    TextXAlignment = Enum.TextXAlignment.Center,
     Parent = v66,
   })
 
@@ -2325,7 +2291,7 @@ local function f30(p33, p34)
   v66.MouseEnter:Connect(function()
     if v65 ~= p33 then
       v69.TextColor3 = Color3.fromRGB(160, 160, 160)
-      v66.BackgroundColor3 = Color3.fromRGB(7, 7, 7)
+      v66.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
     end
   end)
 
@@ -2346,7 +2312,7 @@ local function f30(p33, p34)
     end
 
     v69.TextColor3 = v2.white
-    v66.BackgroundColor3 = Color3.fromRGB(10, 0, 0)
+    v66.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
     v67.BackgroundColor3 = v2.accent
     v68.BackgroundColor3 = v2.accent
     v70.Visible = true
@@ -2359,7 +2325,7 @@ end
 local function f31(parent14, p35, p36)
   local v71 = f1("TextButton", {
     Size = UDim2.new(1, 0, 0, 28),
-    BackgroundColor3 = Color3.fromRGB(6, 6, 6),
+    BackgroundColor3 = Color3.fromRGB(20, 20, 20),
     BorderSizePixel = 0,
     Text = "  " .. p35,
     Font = gothamBold,
@@ -2381,14 +2347,14 @@ local function f31(parent14, p35, p36)
 
   v71.MouseEnter:Connect(function()
     if not _G.ShazeFarm.SelectedMobs[p36][p35] then
-      v71.BackgroundColor3 = Color3.fromRGB(20, 5, 5)
+      v71.BackgroundColor3 = Color3.fromRGB(45, 25, 25)
       v71.TextColor3 = v2.white
     end
   end)
 
   v71.MouseLeave:Connect(function()
     if not _G.ShazeFarm.SelectedMobs[p36][p35] then
-      v71.BackgroundColor3 = Color3.fromRGB(6, 6, 6)
+      v71.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
       v71.TextColor3 = v2.text
     end
   end)
@@ -2399,7 +2365,7 @@ local function f31(parent14, p35, p36)
     if v73[p35] then
       v73[p35] = nil
 
-      v71.BackgroundColor3 = Color3.fromRGB(6, 6, 6)
+      v71.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
       v71.TextColor3 = v2.text
 
       v72.Color = Color3.fromRGB(20, 20, 20)
@@ -2425,7 +2391,7 @@ local function f32(parent15, p37)
 
   local v74 = f1("Frame", {
     Size = UDim2.new(1, 0, 0, 0),
-    BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+    BackgroundColor3 = Color3.fromRGB(28, 28, 28),
     BorderSizePixel = 0,
     AutomaticSize = Enum.AutomaticSize.Y,
     Parent = parent15,
@@ -2460,9 +2426,9 @@ local function f32(parent15, p37)
   })
 
   local v75 = f1("TextButton", {
-    Size = UDim2.fromOffset(38, 20),
-    Position = UDim2.new(1, -38, 0.5, -10),
-    BackgroundColor3 = Color3.fromRGB(12, 12, 12),
+    Size = UDim2.fromOffset(16, 16),
+    Position = UDim2.new(1, -16, 0.5, -8),
+    BackgroundColor3 = Color3.fromRGB(20, 20, 20),
     BorderSizePixel = 0,
     Text = "",
     AutoButtonColor = false,
@@ -2472,6 +2438,7 @@ local function f32(parent15, p37)
   f3(v75, v2.border, 1)
 
   local v76 = f1("Frame", {
+    Visible = false,
     Size = UDim2.fromOffset(14, 14),
     Position = UDim2.new(0, 2, 0.5, -7),
     BackgroundColor3 = Color3.fromRGB(51, 51, 51),
@@ -2480,7 +2447,7 @@ local function f32(parent15, p37)
   })
 
   if _G.ShazeFarm.Enabled and _G.ShazeFarm.CurrentWorld == p37 then
-    v75.BackgroundColor3 = v2.accentDim
+    v75.BackgroundColor3 = v2.accent
     v76.Position = UDim2.new(1, -16, 0.5, -7)
     v76.BackgroundColor3 = v2.accent
     v75.UIStroke.Color = v2.accent
@@ -2488,7 +2455,7 @@ local function f32(parent15, p37)
 
   local v77 = f1("ScrollingFrame", {
     Size = UDim2.new(1, 0, 0, 30 * #v3[p37] + 8),
-    BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+    BackgroundColor3 = Color3.fromRGB(20, 20, 20),
     BorderSizePixel = 0,
     ScrollBarThickness = 0,
     CanvasSize = UDim2.new(0, 0, 0, 0),
@@ -2513,7 +2480,7 @@ local function f32(parent15, p37)
   f24(v74, _G.ShazeFarm, 0.1, 0.05, 2, "Speed:")
 
   worldOff[p37] = function()
-    v75.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+    v75.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
     v76.Position = UDim2.new(0, 2, 0.5, -7)
     v76.BackgroundColor3 = Color3.fromRGB(51, 51, 51)
     v75.UIStroke.Color = v2.border
@@ -2524,7 +2491,7 @@ local function f32(parent15, p37)
       _G.ShazeFarm.Enabled = false
       _G.ShazeFarm.CurrentWorld = ""
 
-      v75.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+      v75.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 
       v76.Position = UDim2.new(0, 2, 0.5, -7)
       v76.BackgroundColor3 = Color3.fromRGB(51, 51, 51)
@@ -2553,7 +2520,7 @@ local function f32(parent15, p37)
         end
       end
 
-      v75.BackgroundColor3 = v2.accentDim
+      v75.BackgroundColor3 = v2.accent
 
       v76.Position = UDim2.new(1, -16, 0.5, -7)
       v76.BackgroundColor3 = v2.accent
@@ -2573,7 +2540,7 @@ v65 = "farm"
 
 local v79 = v64[1]
 v79.label.TextColor3 = v2.white
-v79.tab.BackgroundColor3 = Color3.fromRGB(10, 0, 0)
+v79.tab.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 v79.line.BackgroundColor3 = v2.accent
 v79.dot.BackgroundColor3 = v2.accent
 v79.page.Visible = true
@@ -2602,13 +2569,13 @@ local function f33()
       value17.tik.Visible = true
       value17.box.BackgroundColor3 = v2.accentDim
       value17.box.UIStroke.Color = v2.accent
-      value17.row.BackgroundColor3 = Color3.fromRGB(10, 0, 0)
+      value17.row.BackgroundColor3 = Color3.fromRGB(45, 20, 20)
       value17.txt.TextColor3 = v2.accent
     else
       value17.tik.Visible = false
       value17.box.BackgroundColor3 = v2.bg
       value17.box.UIStroke.Color = v2.border
-      value17.row.BackgroundColor3 = Color3.fromRGB(6, 6, 6)
+      value17.row.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
       value17.txt.TextColor3 = v2.text
     end
   end
@@ -2619,7 +2586,7 @@ for index14, value18 in ipairs({ "LeafVillageRaid", "MundoRaid" }) do
 
   local v83 = f1("TextButton", {
     Size = UDim2.new(1, 0, 0, 30),
-    BackgroundColor3 = Color3.fromRGB(6, 6, 6),
+    BackgroundColor3 = Color3.fromRGB(20, 20, 20),
     BorderSizePixel = 0,
     Text = "",
     AutoButtonColor = false,
@@ -2695,13 +2662,13 @@ local function f34()
       value19.tik.Visible = true
       value19.box.BackgroundColor3 = v2.accentDim
       value19.box.UIStroke.Color = v2.accent
-      value19.row.BackgroundColor3 = Color3.fromRGB(10, 0, 0)
+      value19.row.BackgroundColor3 = Color3.fromRGB(45, 20, 20)
       value19.txt.TextColor3 = v2.accent
     else
       value19.tik.Visible = false
       value19.box.BackgroundColor3 = v2.bg
       value19.box.UIStroke.Color = v2.border
-      value19.row.BackgroundColor3 = Color3.fromRGB(6, 6, 6)
+      value19.row.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
       value19.txt.TextColor3 = v2.text
     end
   end
@@ -2714,7 +2681,7 @@ for index15, value20 in ipairs({
 
   local v87 = f1("TextButton", {
     Size = UDim2.new(1, 0, 0, 30),
-    BackgroundColor3 = Color3.fromRGB(6, 6, 6),
+    BackgroundColor3 = Color3.fromRGB(20, 20, 20),
     BorderSizePixel = 0,
     Text = "",
     AutoButtonColor = false,
@@ -2776,7 +2743,7 @@ f34()
 
 local v89 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 0),
-  BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+  BackgroundColor3 = Color3.fromRGB(28, 28, 28),
   BorderSizePixel = 0,
   AutomaticSize = Enum.AutomaticSize.Y,
   Parent = parent17,
@@ -2838,7 +2805,7 @@ f1("TextLabel", {
 
 local v90 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 0),
-  BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+  BackgroundColor3 = Color3.fromRGB(28, 28, 28),
   BorderSizePixel = 0,
   AutomaticSize = Enum.AutomaticSize.Y,
   Parent = parent17,
@@ -2902,32 +2869,6 @@ f28(f1("Frame", {
   BackgroundTransparency = 1,
   Parent = parent21,
 }), _G.AutoLeaveRaid.AutoRearm ~= false, function(autoRearm) _G.AutoLeaveRaid.AutoRearm = autoRearm end)
-
-do
-  local kRow = f1("Frame", {
-    Size = UDim2.new(1, 0, 0, 30),
-    BackgroundTransparency = 1,
-    Parent = v90,
-  })
-
-  f1("TextLabel", {
-    Size = UDim2.new(1, -80, 1, 0),
-    BackgroundTransparency = 1,
-    Text = "Leave raid when Kusuke spawns",
-    Font = gothamBold,
-    TextSize = 12,
-    TextColor3 = v2.textMute,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    Parent = kRow,
-  })
-
-  f28(f1("Frame", {
-    Size = UDim2.new(0, 50, 1, 0),
-    Position = UDim2.new(1, -50, 0, 0),
-    BackgroundTransparency = 1,
-    Parent = kRow,
-  }), _G.AutoRaid.LeaveForKusuke ~= false, function(on) _G.AutoRaid.LeaveForKusuke = on end)
-end
 
 local parent22 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 24),
@@ -3106,7 +3047,7 @@ userInputService.InputEnded:Connect(function(input12)
 end)
 
 local v107 = f1("TextButton", {
-  Size = UDim2.new(1, 0, 0, 36),
+  Size = UDim2.new(1, 0, 0, 26),
   BackgroundColor3 = v2.panel,
   BorderSizePixel = 0,
   Text = "LEAVE NOW",
@@ -3145,7 +3086,7 @@ f1("TextLabel", {
 
 local v108 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 0),
-  BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+  BackgroundColor3 = Color3.fromRGB(28, 28, 28),
   BorderSizePixel = 0,
   AutomaticSize = Enum.AutomaticSize.Y,
   Parent = parent18,
@@ -3201,7 +3142,7 @@ f1("TextLabel", {
 
 local v109 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 0),
-  BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+  BackgroundColor3 = Color3.fromRGB(28, 28, 28),
   BorderSizePixel = 0,
   AutomaticSize = Enum.AutomaticSize.Y,
   Parent = parent18,
@@ -3245,7 +3186,7 @@ f28(f1("Frame", {
 f26(v109, _G.AutoEquipPet, 5, 1, 60)
 
 local v110 = f1("TextButton", {
-  Size = UDim2.new(1, 0, 0, 36),
+  Size = UDim2.new(1, 0, 0, 26),
   BackgroundColor3 = v2.panel,
   BorderSizePixel = 0,
   Text = "EQUIP NOW",
@@ -3285,7 +3226,7 @@ do
 
   local potionCard = f1("Frame", {
     Size = UDim2.new(1, 0, 0, 0),
-    BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+    BackgroundColor3 = Color3.fromRGB(28, 28, 28),
     BorderSizePixel = 0,
     AutomaticSize = Enum.AutomaticSize.Y,
     Parent = parent18,
@@ -3377,7 +3318,7 @@ f1("TextLabel", {
 
 local v111 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 0),
-  BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+  BackgroundColor3 = Color3.fromRGB(28, 28, 28),
   BorderSizePixel = 0,
   AutomaticSize = Enum.AutomaticSize.Y,
   Parent = parent18,
@@ -3561,7 +3502,7 @@ userInputService.InputEnded:Connect(function(input15)
 end)
 
 local v119 = f1("TextButton", {
-  Size = UDim2.new(1, 0, 0, 36),
+  Size = UDim2.new(1, 0, 0, 26),
   BackgroundColor3 = v2.panel,
   BorderSizePixel = 0,
   Text = "LEAVE DUNGEON NOW",
@@ -3600,7 +3541,7 @@ f1("TextLabel", {
 
 local v120 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 0),
-  BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+  BackgroundColor3 = Color3.fromRGB(28, 28, 28),
   BorderSizePixel = 0,
   AutomaticSize = Enum.AutomaticSize.Y,
   Parent = parent18,
@@ -3618,7 +3559,7 @@ f1("UIListLayout", {
 f4(v120, 12)
 
 local v121 = f1("TextButton", {
-  Size = UDim2.new(1, 0, 0, 36),
+  Size = UDim2.new(1, 0, 0, 26),
   BackgroundColor3 = v2.panel,
   BorderSizePixel = 0,
   Text = "SAVE POSITION",
@@ -3645,7 +3586,7 @@ end)
 v121.MouseButton1Click:Connect(function() f7() end)
 
 local v122 = f1("TextButton", {
-  Size = UDim2.new(1, 0, 0, 36),
+  Size = UDim2.new(1, 0, 0, 26),
   BackgroundColor3 = v2.panel,
   BorderSizePixel = 0,
   Text = "GO TO SAVED",
@@ -3670,6 +3611,62 @@ v122.MouseLeave:Connect(function()
 end)
 
 v122.MouseButton1Click:Connect(function() f8() end)
+
+-- ===== UI polish pass (visual only) =====
+-- slider tracks -> thick bars (knob hidden)
+for _, d in ipairs(v35:GetDescendants()) do
+  if d:IsA("Frame") and d.Size.Y.Scale == 0 and d.Size.Y.Offset == 4 then
+    d.Size = UDim2.new(d.Size.X.Scale, d.Size.X.Offset, 0, 14)
+    d.Position = UDim2.new(d.Position.X.Scale, d.Position.X.Offset, 0.5, -7)
+    d.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    f3(d, v2.border, 1)
+
+    for _, c in ipairs(d:GetChildren()) do
+      if c:IsA("Frame") and c.Size.X.Offset == 12 then
+        c.Visible = false
+      end
+    end
+  end
+end
+
+-- groupboxes get a 2px accent line on top
+for _, page in pairs(v60) do
+  local order = 0
+
+  for _, child in ipairs(page:GetChildren()) do
+    if child:IsA("GuiObject") then
+      order = order + 1
+      child.LayoutOrder = order
+    end
+  end
+
+  for _, child in ipairs(page:GetChildren()) do
+    if child:IsA("Frame") and child.AutomaticSize == Enum.AutomaticSize.Y then
+      local wrap = f1("Frame", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        LayoutOrder = child.LayoutOrder,
+        Parent = page,
+      })
+
+      f1("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 0), Parent = wrap })
+
+      f1("Frame", {
+        Size = UDim2.new(1, 0, 0, 2),
+        BackgroundColor3 = v2.accent,
+        BorderSizePixel = 0,
+        LayoutOrder = 0,
+        Parent = wrap,
+      })
+
+      child.LayoutOrder = 1
+      child.Parent = wrap
+    end
+  end
+end
+-- ===== end UI polish pass =====
 
 local v123 = false
 local position, position2
@@ -3728,10 +3725,9 @@ end
 
 -- narrower sidebar when the window is narrow (phones in portrait)
 local function applyLayout()
-  local sw = getWindowSize().X < 460 and 92 or 130
-  parent8.Size = UDim2.new(0, sw, 1, 0)
-  parent9.Position = UDim2.new(0, sw, 0, 0)
-  parent9.Size = UDim2.new(1, -sw, 1, 0)
+  parent8.Size = UDim2.new(1, 0, 0, 26)
+  parent9.Position = UDim2.new(0, 0, 0, 26)
+  parent9.Size = UDim2.new(1, 0, 1, -26)
 end
 
 -- keep the main window fully on screen (also handles rotation / small screens)
@@ -3783,7 +3779,7 @@ end
 local EDGE = isTouch and 16 or 6
 local GRIP = isTouch and 34 or 18
 
-makeResizeHandle("ResizeR", UDim2.new(0, EDGE, 1, -(40 + GRIP)), UDim2.new(1, -EDGE, 0, 40), "x")
+makeResizeHandle("ResizeR", UDim2.new(0, EDGE, 1, -(28 + GRIP)), UDim2.new(1, -EDGE, 0, 28), "x")
 makeResizeHandle("ResizeB", UDim2.new(1, -GRIP, 0, EDGE), UDim2.new(0, 0, 1, -EDGE), "y")
 makeResizeHandle("ResizeXY", UDim2.fromOffset(GRIP, GRIP), UDim2.new(1, -GRIP, 1, -GRIP), "xy")
 
