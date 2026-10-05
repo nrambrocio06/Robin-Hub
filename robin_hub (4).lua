@@ -1141,20 +1141,10 @@ task.spawn(function()
         local v28 = f19()
 
         if #v28 > 0 then
+          -- already inside a raid (enemies exist): no teleporting to enemies, just wait
+          -- here so we don't re-open / re-join while the raid is running
           noEnemySince = nil
-
-          if v26 > #v28 then
-            v26 = 1
-          end
-
-          local v29 = v28[v26]
-
-          if v29 and v29.Parent then
-            tpTo(v27, v29.CFrame + Vector3.new(0, 3, 4))
-            _G.RobinRaidMoved = true
-          end
-
-          v26 = v26 + 1
+          v26 = 1
         else
           v26 = 1
           noEnemySince = noEnemySince or tick()
@@ -2613,7 +2603,7 @@ for index14, value18 in ipairs({ "LeafVillageRaid", "MundoRaid" }) do
       Size = UDim2.fromOffset(14, 14),
       Position = UDim2.new(0, 0, 0, -3),
       BackgroundTransparency = 1,
-      Text = "✓",
+      Text = "âœ“",
       Font = gothamBold,
       TextSize = 12,
       TextColor3 = v2.accent,
@@ -2705,7 +2695,7 @@ for index15, value20 in ipairs({
     Size = UDim2.fromOffset(14, 14),
     Position = UDim2.new(0, 0, 0, -3),
     BackgroundTransparency = 1,
-    Text = "✓",
+    Text = "âœ“",
     Font = gothamBold,
     TextSize = 12,
     TextColor3 = v2.accent,
@@ -2769,7 +2759,7 @@ local parent19 = f1("Frame", {
 f1("TextLabel", {
   Size = UDim2.new(1, -80, 1, 0),
   BackgroundTransparency = 1,
-  Text = "Auto Raid + Farm",
+  Text = "Auto Join Raid",
   Font = gothamBold,
   TextSize = 13,
   TextColor3 = v2.white,
@@ -2790,7 +2780,7 @@ f28(f1("Frame", {
   end
 end)
 
-f24(v89, _G.AutoRaid, 0.05, 0.02, 0.5, "TP Speed:")
+f24(v89, _G.AutoRaid, 0.05, 0.02, 0.5, "Check Speed:")
 
 f1("TextLabel", {
   Size = UDim2.new(1, 0, 0, 22),
