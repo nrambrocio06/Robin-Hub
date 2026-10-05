@@ -81,6 +81,7 @@ _G.ShazeFarm = {
   SelectedMobs = {},
   Speed = 0.1,
   WorldSpawns = {},
+  RevisitSpawns = false, -- false = don't teleport to spawn points when mobs are down/not spawned
 }
 
 _G.AutoEquipPet = { Enabled = false, Interval = 5 }
@@ -499,12 +500,13 @@ task.spawn(function()
 
             if v14 then
               tpTo(v12, v14.CFrame + Vector3.new(0, 3, 4))
-            else
-              -- no selected mob loaded: revisit where they were seen, else go to the world
+            elseif _G.ShazeFarm.RevisitSpawns then
+              -- optional (off by default): no selected mob loaded, so revisit where they were seen
               if not visitKnownMobs(_G.ShazeFarm.CurrentWorld, v13) then
                 goToWorld(_G.ShazeFarm.CurrentWorld)
               end
             end
+            -- else: mobs are dead / not spawned yet -> stay where we are and wait
           end
         end
       end
