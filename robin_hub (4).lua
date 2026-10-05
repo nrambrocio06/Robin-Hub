@@ -140,6 +140,12 @@ local lastScriptTime = 0
 _G.RobinManualUntil = 0
 _G.RobinRaidMoved = false
 _G.RobinDungeonWaiting = false
+_G.RobinDungeonJoinTime = 0
+_G.RobinStartDungeonWait = function(pos)
+  _G.RobinDungeonWaiting = true
+  _G.RobinDungeonWaitStart = tick()
+  _G.RobinDungeonWaitPos = pos
+end
 
 local function tpTo(root, cf)
   root.CFrame = cf
@@ -490,6 +496,11 @@ end
 task.spawn(function()
   while true do
     if _G.ShazeFarm.Enabled and _G.ShazeFarm.CurrentWorld ~= "" then
+      -- safety: the waiting hold can never block the farm for more than 45s
+      if _G.RobinDungeonWaiting and tick() - (_G.RobinDungeonWaitStart or 0) > 45 then
+        _G.RobinDungeonWaiting = false
+      end
+
       if tick() >= (_G.RobinManualUntil or 0) and not f11() and not f12() and not _G.RobinDungeonWaiting then
         local v12 = f6()
 
@@ -500,7 +511,15 @@ task.spawn(function()
             local v14 = f10(_G.ShazeFarm.CurrentWorld, v13)
 
             if v14 then
-              tpTo(v12, v14.CFrame + Vector3.new(0, 3, 4))
+              -- the game just moved us right after a dungeon join (we are NOT where the script
+              -- last put us): stay in the waiting room instead of teleporting back out
+              if tick() - (_G.RobinDungeonJoinTime or 0) < 20
+                and lastScriptPos and tick() - lastScriptTime < 2
+                and (v12.Position - lastScriptPos).Magnitude > 120 then
+                _G.RobinStartDungeonWait(v12.Position)
+              else
+                tpTo(v12, v14.CFrame + Vector3.new(0, 3, 4))
+              end
             elseif _G.ShazeFarm.RevisitSpawns then
               -- optional (off by default): no selected mob loaded, so revisit where they were seen
               if not visitKnownMobs(_G.ShazeFarm.CurrentWorld, v13) then
@@ -944,8 +963,6 @@ task.spawn(function()
   -- While waiting we must NOT re-send the join and the world farm must not drag us away.
   local joinPos = nil
   local joinTime = 0
-  local waitPos = nil
-  local waitStart = 0
 
   while true do
     if _G.AutoDungeon.Enabled then
@@ -958,7 +975,6 @@ task.spawn(function()
           dNoEnemySince = nil
           _G.RobinDungeonWaiting = false -- dungeon started
           joinPos = nil
-          waitPos = nil
 
           if v18 > #v21 then
             v18 = 1
@@ -989,21 +1005,23 @@ task.spawn(function()
 
           local v24 = tick()
 
-          -- joined: the game teleported us far from where we pressed join = we are in the
-          -- dungeon waiting room (countdown before it starts)
+          -- Joined and the game moved us far away = we are in the dungeon waiting room.
+          -- Only counts when the SCRIPT has not teleported us since the join (so the world
+          -- farm's own teleports are never mistaken for it). With the world farm on, the
+          -- farm loop does this check itself.
           if joinPos and not _G.RobinDungeonWaiting and v24 - joinTime < 20
+            and lastScriptTime <= joinTime
             and (v20.Position - joinPos).Magnitude > 100 then
-            _G.RobinDungeonWaiting = true
-            waitPos = v20.Position
-            waitStart = v24
+            _G.RobinStartDungeonWait(v20.Position)
             joinPos = nil
           end
 
           if _G.RobinDungeonWaiting then
-            -- stop waiting if the dungeon never starts (90s) or we got moved away again
-            if v24 - waitStart > 90 or (waitPos and (v20.Position - waitPos).Magnitude > 150) then
+            -- never hold for long: the countdown is ~30s
+            local wp = _G.RobinDungeonWaitPos
+            if v24 - (_G.RobinDungeonWaitStart or 0) > 45
+              or (wp and (v20.Position - wp).Magnitude > 150) then
               _G.RobinDungeonWaiting = false
-              waitPos = nil
             end
           end
 
@@ -1013,6 +1031,7 @@ task.spawn(function()
             v19 = v24
             joinPos = v20.Position
             joinTime = v24
+            _G.RobinDungeonJoinTime = v24
             f16()
           end
 
@@ -1025,7 +1044,6 @@ task.spawn(function()
       v18 = 1
       _G.RobinDungeonWaiting = false
       joinPos = nil
-      waitPos = nil
       task.wait(0.3)
     end
   end
