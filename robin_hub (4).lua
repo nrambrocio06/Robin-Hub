@@ -166,7 +166,14 @@ task.spawn(function()
 
     if root and lastScriptPos and tick() - lastScriptTime > 0.4 then
       if (root.Position - lastScriptPos).Magnitude > 120 then
-        _G.RobinManualUntil = tick() + 45
+        if inRun then
+          -- the game moved us out of the dungeon/raid (it finished): not a manual move,
+          -- so don't pause the farm - resume it right away
+          _G.RobinManualUntil = 0
+          _G.RobinDungeonWaiting = false
+        else
+          _G.RobinManualUntil = tick() + 45
+        end
         lastScriptPos = nil
         _G.AutoDungeon.Moved = false
         _G.RobinRaidMoved = false
@@ -660,6 +667,12 @@ local function f14()
     return nil
   end
 
+  -- a hidden leftover label means we are NOT in a dungeon (this caused the
+  -- "No dungeon running!" popup): treat it as no wave
+  if not isShown(counter) then
+    return nil
+  end
+
   if loggedCounter ~= counter then
     loggedCounter = counter
     warn("[RobinHub] wave counter: " .. counter:GetFullName() .. " = '" .. tostring(counter.Text) .. "'")
@@ -926,7 +939,9 @@ task.spawn(function()
             warn("[RobinHub] leaving dungeon at wave " .. wave .. (remote and "" or " (Leave remote NOT found)"))
             f17()
             d.ReturnPending = true
-          elseif attempts < 6 and tick() - lastLeave > 3 then
+            _G.RobinManualUntil = 0
+            _G.RobinDungeonWaiting = false
+          elseif attempts < 6 and tick() - lastLeave > 6 then
             -- still in the dungeon after leaving: try other ways, then the game's own button
             attempts += 1
             lastLeave = tick()
@@ -1000,6 +1015,9 @@ task.spawn(function()
             and (_G.AutoDungeon.ReturnPending or tick() - dNoEnemySince >= 6) then
             _G.AutoDungeon.ReturnPending = false
             _G.AutoDungeon.Moved = false
+            -- dungeon is over: release every hold so the farm restarts immediately
+            _G.RobinManualUntil = 0
+            _G.RobinDungeonWaiting = false
             returnToSaved()
           end
 
@@ -3568,7 +3586,7 @@ v119.MouseLeave:Connect(function()
   v119.UIStroke.Color = v2.border
 end)
 
-v119.MouseButton1Click:Connect(function() f17() end)
+v119.MouseButton1Click:Connect(function() if f14() then f17() end end)
 
 f1("TextLabel", {
   Size = UDim2.new(1, 0, 0, 22),
