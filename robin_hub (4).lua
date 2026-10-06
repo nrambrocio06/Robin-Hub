@@ -846,6 +846,76 @@ _G.RobinDumpDungeonHud = function()
 end
 -- ===== end dungeon diagnostics =====
 
+-- Hide the game's "No dungeon running!" toast. The auto-join keeps asking the server to enter
+-- the dungeon every few seconds, and when none is open the game answers with that popup.
+task.spawn(function()
+  local pg = localPlayer:WaitForChild("PlayerGui")
+  local hidden = {} -- label -> the parent toast box we hid (or false)
+
+  local function isToast(v)
+    local ok, res = pcall(function()
+      return v.Text:lower():find("no dungeon running", 1, true) ~= nil
+    end)
+    return ok and res
+  end
+
+  local function hide(v)
+    pcall(function()
+      v.Visible = false
+      v.TextTransparency = 1
+
+      local box = false
+      local p = v.Parent
+
+      -- hide the toast's box too, but only if it is a small element (never a big container)
+      if p and p:IsA("GuiObject") and p.AbsoluteSize.Y < 120 and p.AbsoluteSize.X < pg.AbsoluteSize.X * 0.7 then
+        p.Visible = false
+        box = p
+      end
+
+      hidden[v] = box
+    end)
+  end
+
+  local function restore(v)
+    local box = hidden[v]
+    hidden[v] = nil
+
+    pcall(function()
+      v.Visible = true
+      v.TextTransparency = 0
+
+      if box then
+        box.Visible = true
+      end
+    end)
+  end
+
+  local function watch(v)
+    if v:IsA("TextLabel") and not v:FindFirstAncestor("RobinHub") then
+      if isToast(v) then
+        hide(v)
+      end
+
+      v:GetPropertyChangedSignal("Text"):Connect(function()
+        if isToast(v) then
+          hide(v)
+        elseif hidden[v] ~= nil then
+          restore(v) -- label got reused for another message
+        end
+      end)
+    end
+  end
+
+  for _, v in ipairs(pg:GetDescendants()) do
+    watch(v)
+  end
+
+  pg.DescendantAdded:Connect(function(v)
+    task.defer(watch, v)
+  end)
+end)
+
 -- press the game's own exit/leave button (works even if we don't know the Leave remote args)
 local function pressInGameLeave()
   local pg = localPlayer:FindFirstChild("PlayerGui")
