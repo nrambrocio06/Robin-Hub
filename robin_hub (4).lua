@@ -166,14 +166,7 @@ task.spawn(function()
 
     if root and lastScriptPos and tick() - lastScriptTime > 0.4 then
       if (root.Position - lastScriptPos).Magnitude > 120 then
-        if inRun then
-          -- the game moved us out of the dungeon/raid (it finished): not a manual move,
-          -- so don't pause the farm - resume it right away
-          _G.RobinManualUntil = 0
-          _G.RobinDungeonWaiting = false
-        else
-          _G.RobinManualUntil = tick() + 45
-        end
+        _G.RobinManualUntil = tick() + 45
         lastScriptPos = nil
         _G.AutoDungeon.Moved = false
         _G.RobinRaidMoved = false
@@ -667,12 +660,6 @@ local function f14()
     return nil
   end
 
-  -- a hidden leftover label means we are NOT in a dungeon (this caused the
-  -- "No dungeon running!" popup): treat it as no wave
-  if not isShown(counter) then
-    return nil
-  end
-
   if loggedCounter ~= counter then
     loggedCounter = counter
     warn("[RobinHub] wave counter: " .. counter:GetFullName() .. " = '" .. tostring(counter.Text) .. "'")
@@ -846,76 +833,6 @@ _G.RobinDumpDungeonHud = function()
 end
 -- ===== end dungeon diagnostics =====
 
--- Hide the game's "No dungeon running!" toast. The auto-join keeps asking the server to enter
--- the dungeon every few seconds, and when none is open the game answers with that popup.
-task.spawn(function()
-  local pg = localPlayer:WaitForChild("PlayerGui")
-  local hidden = {} -- label -> the parent toast box we hid (or false)
-
-  local function isToast(v)
-    local ok, res = pcall(function()
-      return v.Text:lower():find("no dungeon running", 1, true) ~= nil
-    end)
-    return ok and res
-  end
-
-  local function hide(v)
-    pcall(function()
-      v.Visible = false
-      v.TextTransparency = 1
-
-      local box = false
-      local p = v.Parent
-
-      -- hide the toast's box too, but only if it is a small element (never a big container)
-      if p and p:IsA("GuiObject") and p.AbsoluteSize.Y < 120 and p.AbsoluteSize.X < pg.AbsoluteSize.X * 0.7 then
-        p.Visible = false
-        box = p
-      end
-
-      hidden[v] = box
-    end)
-  end
-
-  local function restore(v)
-    local box = hidden[v]
-    hidden[v] = nil
-
-    pcall(function()
-      v.Visible = true
-      v.TextTransparency = 0
-
-      if box then
-        box.Visible = true
-      end
-    end)
-  end
-
-  local function watch(v)
-    if v:IsA("TextLabel") and not v:FindFirstAncestor("RobinHub") then
-      if isToast(v) then
-        hide(v)
-      end
-
-      v:GetPropertyChangedSignal("Text"):Connect(function()
-        if isToast(v) then
-          hide(v)
-        elseif hidden[v] ~= nil then
-          restore(v) -- label got reused for another message
-        end
-      end)
-    end
-  end
-
-  for _, v in ipairs(pg:GetDescendants()) do
-    watch(v)
-  end
-
-  pg.DescendantAdded:Connect(function(v)
-    task.defer(watch, v)
-  end)
-end)
-
 -- press the game's own exit/leave button (works even if we don't know the Leave remote args)
 local function pressInGameLeave()
   local pg = localPlayer:FindFirstChild("PlayerGui")
@@ -1009,9 +926,7 @@ task.spawn(function()
             warn("[RobinHub] leaving dungeon at wave " .. wave .. (remote and "" or " (Leave remote NOT found)"))
             f17()
             d.ReturnPending = true
-            _G.RobinManualUntil = 0
-            _G.RobinDungeonWaiting = false
-          elseif attempts < 6 and tick() - lastLeave > 6 then
+          elseif attempts < 6 and tick() - lastLeave > 3 then
             -- still in the dungeon after leaving: try other ways, then the game's own button
             attempts += 1
             lastLeave = tick()
@@ -1085,9 +1000,6 @@ task.spawn(function()
             and (_G.AutoDungeon.ReturnPending or tick() - dNoEnemySince >= 6) then
             _G.AutoDungeon.ReturnPending = false
             _G.AutoDungeon.Moved = false
-            -- dungeon is over: release every hold so the farm restarts immediately
-            _G.RobinManualUntil = 0
-            _G.RobinDungeonWaiting = false
             returnToSaved()
           end
 
@@ -3656,7 +3568,7 @@ v119.MouseLeave:Connect(function()
   v119.UIStroke.Color = v2.border
 end)
 
-v119.MouseButton1Click:Connect(function() if f14() then f17() end end)
+v119.MouseButton1Click:Connect(function() f17() end)
 
 f1("TextLabel", {
   Size = UDim2.new(1, 0, 0, 22),
