@@ -764,6 +764,116 @@ local function f17()
   return true
 end
 
+-- ===== remote logger (OFF by default, does nothing until you turn it on) =====
+-- Use it to find the remotes of new game features (shrines, machine, merchant...):
+--   _G.RobinRemoteLog(true)     start logging every remote the GAME fires (with arguments)
+--   _G.RobinRemoteLog(false)    stop logging
+--   _G.RobinDumpRemoteLog()     copy everything logged so far to your clipboard
+--   _G.RobinClearRemoteLog()    empty the log
+-- Do one action in the game (press a button, buy something...), then dump the log.
+do
+  local logLines = {}
+  local lastSeen = {}
+  local lastSeenCount = 0
+
+  local function ser(v, depth)
+    depth = depth or 0
+    local t = typeof(v)
+
+    if t == "string" then
+      return string.format("%q", v)
+    elseif t == "table" then
+      if depth >= 2 then
+        return "{...}"
+      end
+
+      local out = {}
+      local n = 0
+
+      for k, x in pairs(v) do
+        n = n + 1
+
+        if n > 8 then
+          out[#out + 1] = "..."
+          break
+        end
+
+        out[#out + 1] = "[" .. tostring(k) .. "]=" .. ser(x, depth + 1)
+      end
+
+      return "{" .. table.concat(out, ", ") .. "}"
+    elseif t == "Instance" then
+      local ok, name = pcall(function() return v:GetFullName() end)
+      return ok and ("<" .. tostring(name) .. ">") or "<Instance>"
+    end
+
+    return tostring(v)
+  end
+
+  _G.RobinRemoteLogOn = false
+
+  _G.RobinRemoteLog = function(on)
+    _G.RobinRemoteLogOn = on ~= false
+    warn("[RobinHub] remote logger " .. (_G.RobinRemoteLogOn and "ON" or "OFF"))
+  end
+
+  _G.RobinLogRemoteCall = function(remote, method, args)
+    pcall(function()
+      local path = remote:GetFullName()
+      local parts = {}
+
+      for i = 1, args.n do
+        parts[i] = ser(args[i])
+      end
+
+      local text = path .. ":" .. method .. "(" .. table.concat(parts, ", ") .. ")"
+
+      -- skip the same call repeated within 1 second (spammy remotes)
+      local now = tick()
+
+      if lastSeen[text] and now - lastSeen[text] < 1 then
+        return
+      end
+
+      lastSeen[text] = now
+      lastSeenCount = lastSeenCount + 1
+
+      if lastSeenCount > 500 then
+        lastSeen = {}
+        lastSeenCount = 0
+      end
+
+      logLines[#logLines + 1] = text
+
+      if #logLines > 400 then
+        table.remove(logLines, 1)
+      end
+
+      warn("[RobinHub] remote: " .. text)
+    end)
+  end
+
+  _G.RobinDumpRemoteLog = function()
+    local text = table.concat(logLines, "\n")
+
+    if setclipboard then
+      pcall(setclipboard, text)
+      warn("[RobinHub] remote log copied to clipboard (" .. #logLines .. " lines)")
+    else
+      warn(text)
+    end
+
+    return text
+  end
+
+  _G.RobinClearRemoteLog = function()
+    logLines = {}
+    lastSeen = {}
+    lastSeenCount = 0
+  end
+end
+-- ===== end remote logger =====
+
 -- ===== dungeon diagnostics =====
 -- Logs every call the GAME makes to ReplicatedStorage.Remotes.Dungeons.* (e.g. when you press
 -- its own Leave button). The arguments used for Leave are remembered and reused by auto leave.
@@ -797,6 +907,24 @@ do
             end)
           end
         end)
+
+        -- optional all-remote logger (off unless _G.RobinRemoteLog(true) was run);
+        -- Dungeons/Raids are already logged above
+        if _G.RobinRemoteLogOn then
+          pcall(function()
+            if typeof(self) == "Instance" and not (checkcaller and checkcaller()) then
+              local cls = self.ClassName
+
+              if cls == "RemoteEvent" or cls == "RemoteFunction" then
+                local pname = self.Parent and self.Parent.Name
+
+                if pname ~= "Dungeons" and pname ~= "Raids" then
+                  task.spawn(_G.RobinLogRemoteCall, self, method, args)
+                end
+              end
+            end
+          end)
+        end
       end
 
       return old(self, ...)
@@ -1425,7 +1553,23 @@ do
     Interval = 900,       -- UseAll = false only: seconds between uses (potions last 15 min)
     Intervals = {},       -- UseAll = false only: per-potion override, e.g. ["Luck Potion"] = 900
     Potions = { "Coin Potion", "Damage Potion", "Drop Potion", "Energy Potion", "Luck Potion" },
+    Debug = true,         -- prints a short line when it uses a potion / something is wrong
   }
+
+  local lastDbg = {}
+
+  local function dbg(key, msg, every)
+    if _G.AutoPotion.Debug == false then
+      return
+    end
+
+    local now = tick()
+
+    if now - (lastDbg[key] or 0) >= (every or 0) then
+      lastDbg[key] = now
+      warn("[RobinHub] potion: " .. msg)
+    end
+  end
 
   local function getUseItemRemote()
     local remotes = replicatedStorage:FindFirstChild("Remotes")
@@ -1433,13 +1577,22 @@ do
     return items and items:FindFirstChild("UseItem")
   end
 
+  local cachedScroller = nil
+
   local function getPotionScroller()
+    if cachedScroller and cachedScroller.Parent then
+      return cachedScroller
+    end
+
+    cachedScroller = nil
+
     local node = localPlayer:FindFirstChild("PlayerGui")
 
     for _, name in ipairs({ "Main", "Frames", "Inventory", "Content", "Holder", "NormalContent", "Slots", "Scroller" }) do
       node = node and node:FindFirstChild(name)
     end
 
+    cachedScroller = node
     return node
   end
 
@@ -1534,23 +1687,55 @@ do
 
   -- UseAll mode: use everything that's in the inventory right now
   local drained = {}
+  local lastFallback = 0
 
   local function drainPotions()
     local remote = getUseItemRemote()
+
+    if not remote then
+      dbg("noremote", "Remotes.Items.UseItem not found", 60)
+      return
+    end
+
     local scroller = getPotionScroller()
 
-    if not remote or not scroller then
+    if not scroller then
+      -- inventory UI isn't loaded: best effort, 1 of each known potion once per Interval
+      if tick() - lastFallback >= (_G.AutoPotion.Interval or 900) then
+        lastFallback = tick()
+        dbg("fallback", "inventory UI not found, trying the known potion ids (1 each)", 0)
+
+        for _, id in pairs(KNOWN_POTION_IDS) do
+          pcall(function() remote:FireServer(id, 1) end)
+          task.wait(0.5)
+        end
+      end
+
       return
     end
 
     for _, p in ipairs(readPotions(scroller)) do
       local last = drained[p.id]
+      local skip = false
 
-      -- skip if we just used this stack and the count hasn't gone down yet
-      local waiting = last and p.amount >= last.amount and tick() - last.time < 30
+      if last and p.amount >= last.amount then
+        -- the count has not gone down since we used this stack
+        local age = tick() - last.time
 
-      if p.amount > 0 and not waiting then
+        if age < 30 then
+          skip = true -- the inventory UI may simply not have updated yet
+        elseif (_G.AutoPotion.BatchSize or 1) > 1 then
+          -- the game probably rejects multi-use: go one at a time from now on
+          _G.AutoPotion.BatchSize = 1
+          dbg("batch", "multi-use did not work, using 1 potion per call from now on", 0)
+        elseif age < 300 then
+          skip = true -- already tried 1 at a time: back off 5 minutes instead of spamming
+        end
+      end
+
+      if p.amount > 0 and not skip then
         drained[p.id] = { time = tick(), amount = p.amount }
+        dbg("use" .. p.id, "using " .. p.name .. " (x" .. p.amount .. ")", 30)
 
         local remaining = p.amount
         local batch = math.max(1, math.floor(_G.AutoPotion.BatchSize or 1))
@@ -1609,9 +1794,24 @@ do
     Enabled = false,
     CheckInterval = 3,  -- seconds between checks (also catches the restock)
     ClickDelay = 0.4,   -- seconds between buys of the same item
+    Debug = true,       -- prints a short line when it buys / something is wrong
   }
 
   local failedUntil = setmetatable({}, { __mode = "k" })
+  local lastDbg = {}
+
+  local function dbg(key, msg, every)
+    if _G.AutoBuyMerchant.Debug == false then
+      return
+    end
+
+    local now = tick()
+
+    if now - (lastDbg[key] or 0) >= (every or 0) then
+      lastDbg[key] = now
+      warn("[RobinHub] merchant: " .. msg)
+    end
+  end
 
   local function lowerText(o)
     local t = ""
@@ -1660,6 +1860,27 @@ do
     end
 
     return nil
+  end
+
+  -- scanning the whole PlayerGui is heavy (lag), so remember the window and look for it
+  -- again at most every 10 seconds
+  local cachedWindow = nil
+  local nextFind = 0
+
+  local function getWindow()
+    if cachedWindow and cachedWindow.Parent then
+      return cachedWindow
+    end
+
+    cachedWindow = nil
+
+    if tick() < nextFind then
+      return nil
+    end
+
+    nextFind = tick() + 10
+    cachedWindow = findWindow()
+    return cachedWindow
   end
 
   -- every buy button in the window with the row that holds its stock label
@@ -1713,14 +1934,17 @@ do
     return false
   end
 
+  -- returns: bought, attempted  (attempted = false means there was nothing to try buying)
   local function uiBuyAll()
-    local window = findWindow()
+    local window = getWindow()
 
     if not window then
-      return 0
+      dbg("nowin", "Potion Merchant window not found (open the shop once, or use LEARN mode)", 60)
+      return 0, false
     end
 
     local bought = 0
+    local attempted = false
 
     for _, r in ipairs(findRows(window)) do
       if not (failedUntil[r.button] and tick() < failedUntil[r.button]) then
@@ -1729,9 +1953,11 @@ do
 
         while stock > 0 and _G.AutoBuyMerchant.Enabled and guard < 20 do
           guard = guard + 1
+          attempted = true
 
           if not press(r.button) then
             failedUntil[r.button] = tick() + 30
+            dbg("press", "could not press a buy button (executor needs getconnections or firesignal)", 60)
             break
           end
 
@@ -1742,6 +1968,7 @@ do
           if newStock >= stock then
             -- nothing changed: probably not enough Potion Tokens, retry in 30s
             failedUntil[r.button] = tick() + 30
+            dbg("nochange", "buying did not change the stock (not enough Potion Tokens?), retrying in 30s", 30)
             break
           end
 
@@ -1751,7 +1978,11 @@ do
       end
     end
 
-    return bought
+    if bought > 0 then
+      dbg("bought", "bought " .. bought .. " item(s)", 0)
+    end
+
+    return bought, attempted
   end
 
   -- ===== remote mode (works with the shop CLOSED) =====
@@ -1933,7 +2164,9 @@ do
       end
 
       lastRemote = tick()
-      return remoteBuyAll()
+      local fired = remoteBuyAll()
+      dbg("remote", "replayed the learned buy calls (" .. fired .. " call(s))", 60)
+      return fired, true
     end
 
     return uiBuyAll()
@@ -1972,8 +2205,15 @@ do
   task.spawn(function()
     while true do
       if _G.AutoBuyMerchant.Enabled then
-        pcall(buyAll)
-        task.wait(_G.AutoBuyMerchant.CheckInterval or 3)
+        local ok, _, attempted = pcall(buyAll)
+        local delay = _G.AutoBuyMerchant.CheckInterval or 3
+
+        -- nothing to buy right now (sold out / no tokens / shop not found): check less often
+        if ok and attempted == false then
+          delay = math.max(delay, 15)
+        end
+
+        task.wait(delay)
       else
         task.wait(1)
       end
@@ -3041,7 +3281,7 @@ for index14, value18 in ipairs({ "LeafVillageRaid", "MundoRaid" }) do
       Size = UDim2.fromOffset(14, 14),
       Position = UDim2.new(0, 0, 0, -3),
       BackgroundTransparency = 1,
-      Text = "âœ“",
+      Text = "Ã¢Å“â€œ",
       Font = gothamBold,
       TextSize = 12,
       TextColor3 = v2.accent,
@@ -3133,7 +3373,7 @@ for index15, value20 in ipairs({
     Size = UDim2.fromOffset(14, 14),
     Position = UDim2.new(0, 0, 0, -3),
     BackgroundTransparency = 1,
-    Text = "âœ“",
+    Text = "Ã¢Å“â€œ",
     Font = gothamBold,
     TextSize = 12,
     TextColor3 = v2.accent,
