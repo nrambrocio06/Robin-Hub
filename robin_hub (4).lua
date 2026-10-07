@@ -1598,6 +1598,390 @@ do
 end
 -- ===== end auto potion =====
 
+-- ===== auto buy potion merchant =====
+-- Buys everything in the Potion Merchant shop every time it has stock (and again after each restock).
+-- It presses the shop's own "Potion Tokens" buy buttons, reading the "Stock: x/y" label of each row,
+-- so it works without knowing the shop's remote name.
+--   _G.RobinBuyMerchant()   run one buy pass right now
+--   _G.RobinDumpMerchant()  prints/copies the merchant UI paths (send me this if buying doesn't work)
+do
+  _G.AutoBuyMerchant = {
+    Enabled = false,
+    CheckInterval = 3,  -- seconds between checks (also catches the restock)
+    ClickDelay = 0.4,   -- seconds between buys of the same item
+  }
+
+  local failedUntil = setmetatable({}, { __mode = "k" })
+
+  local function lowerText(o)
+    local t = ""
+
+    if o:IsA("TextButton") or o:IsA("TextLabel") then
+      t = o.Text
+    end
+
+    return string.lower(t)
+  end
+
+  local function readStock(container)
+    for _, d in ipairs(container:GetDescendants()) do
+      if d:IsA("TextLabel") then
+        local cur, max = string.match(d.Text, "[Ss]tock:%s*(%d+)%s*/%s*(%d+)")
+
+        if cur then
+          return tonumber(cur), tonumber(max)
+        end
+      end
+    end
+
+    return nil
+  end
+
+  -- the merchant window = first ancestor of the "Potion Merchant" title that contains stock labels
+  local function findWindow()
+    local pg = localPlayer:FindFirstChild("PlayerGui")
+
+    if not pg then
+      return nil
+    end
+
+    for _, d in ipairs(pg:GetDescendants()) do
+      if d:IsA("TextLabel") and d.Text == "Potion Merchant" then
+        local node = d.Parent
+
+        while node and node ~= pg do
+          if readStock(node) then
+            return node
+          end
+
+          node = node.Parent
+        end
+      end
+    end
+
+    return nil
+  end
+
+  -- every buy button in the window with the row that holds its stock label
+  local function findRows(window)
+    local rows = {}
+
+    for _, btn in ipairs(window:GetDescendants()) do
+      if btn:IsA("GuiButton") then
+        local text = lowerText(btn)
+
+        for _, d in ipairs(btn:GetDescendants()) do
+          text = text .. " " .. lowerText(d)
+        end
+
+        if string.find(text, "token", 1, true) then
+          local row = btn.Parent
+
+          while row and row ~= window and not readStock(row) do
+            row = row.Parent
+          end
+
+          if row and row ~= window then
+            rows[#rows + 1] = { button = btn, row = row }
+          end
+        end
+      end
+    end
+
+    return rows
+  end
+
+  local function press(btn)
+    for _, ev in ipairs({ "Activated", "MouseButton1Click" }) do
+      if getconnections then
+        local ok, conns = pcall(getconnections, btn[ev])
+
+        if ok and conns and #conns > 0 then
+          for _, c in ipairs(conns) do
+            pcall(function() c:Fire() end)
+          end
+
+          return true
+        end
+      end
+    end
+
+    if firesignal then
+      return pcall(firesignal, btn.Activated) or pcall(firesignal, btn.MouseButton1Click)
+    end
+
+    return false
+  end
+
+  local function uiBuyAll()
+    local window = findWindow()
+
+    if not window then
+      return 0
+    end
+
+    local bought = 0
+
+    for _, r in ipairs(findRows(window)) do
+      if not (failedUntil[r.button] and tick() < failedUntil[r.button]) then
+        local stock = readStock(r.row) or 0
+        local guard = 0
+
+        while stock > 0 and _G.AutoBuyMerchant.Enabled and guard < 20 do
+          guard = guard + 1
+
+          if not press(r.button) then
+            failedUntil[r.button] = tick() + 30
+            break
+          end
+
+          task.wait(_G.AutoBuyMerchant.ClickDelay or 0.4)
+
+          local newStock = readStock(r.row) or 0
+
+          if newStock >= stock then
+            -- nothing changed: probably not enough Potion Tokens, retry in 30s
+            failedUntil[r.button] = tick() + 30
+            break
+          end
+
+          bought = bought + (stock - newStock)
+          stock = newStock
+        end
+      end
+    end
+
+    return bought
+  end
+
+  -- ===== remote mode (works with the shop CLOSED) =====
+  -- Turn on LEARN, buy 1 of each item by hand once, turn LEARN off. The script remembers those
+  -- buy calls (saved to RobinHub/merchant_buy.json) and replays them for every restock,
+  -- no shop window needed.
+  local httpService = game:GetService("HttpService")
+  local BUY_FILE = "RobinHub/merchant_buy.json"
+  local KEYWORDS = { "shop", "merchant", "buy", "purchase", "store", "potion" }
+
+  _G.AutoBuyMerchant.PerItem = 2      -- buys per item per cycle (the stock you see is 2/2)
+  _G.AutoBuyMerchant.RemoteInterval = 20 -- seconds between cycles in remote mode
+  _G.RobinBuyCalls = _G.RobinBuyCalls or {} -- { path = {...}, method = "FireServer", list = {...} }
+  _G.RobinLearnBuy = false
+
+  local function pathOf(inst)
+    local t, n = {}, inst
+
+    while n and n ~= game do
+      table.insert(t, 1, n.Name)
+      n = n.Parent
+    end
+
+    return t
+  end
+
+  local function resolve(path)
+    local n = game
+
+    for _, name in ipairs(path) do
+      n = n and n:FindFirstChild(name)
+    end
+
+    return n
+  end
+
+  local function saveCalls()
+    if type(writefile) ~= "function" then
+      return
+    end
+
+    pcall(function()
+      if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("RobinHub") then
+        makefolder("RobinHub")
+      end
+
+      writefile(BUY_FILE, httpService:JSONEncode(_G.RobinBuyCalls))
+    end)
+  end
+
+  pcall(function()
+    if type(isfile) == "function" and isfile(BUY_FILE) then
+      local data = httpService:JSONDecode(readfile(BUY_FILE))
+
+      if type(data) == "table" then
+        _G.RobinBuyCalls = data
+      end
+    end
+  end)
+
+  _G.RobinClearBuy = function()
+    _G.RobinBuyCalls = {}
+    saveCalls()
+  end
+
+  pcall(function()
+    if not (hookmetamethod and getnamecallmethod) then
+      return
+    end
+
+    local old
+    old = hookmetamethod(game, "__namecall", function(self, ...)
+      local method = getnamecallmethod()
+
+      if _G.RobinLearnBuy and (method == "FireServer" or method == "InvokeServer")
+        and not (checkcaller and checkcaller()) then
+        local args = table.pack(...)
+
+        pcall(function()
+          if typeof(self) ~= "Instance" then
+            return
+          end
+
+          local list, simple, hay = {}, true, string.lower(self:GetFullName())
+
+          for i = 1, args.n do
+            local t = type(args[i])
+
+            if t ~= "string" and t ~= "number" and t ~= "boolean" then
+              simple = false
+            else
+              list[i] = args[i]
+
+              if t == "string" then
+                hay = hay .. " " .. string.lower(args[i])
+              end
+            end
+          end
+
+          local match = false
+
+          for _, k in ipairs(KEYWORDS) do
+            if string.find(hay, k, 1, true) then
+              match = true
+            end
+          end
+
+          local parts = {}
+
+          for i = 1, args.n do
+            parts[i] = tostring(args[i])
+          end
+
+          local text = self:GetFullName() .. "(" .. table.concat(parts, ", ") .. ")"
+
+          if match and simple then
+            local path = pathOf(self)
+            local sig = table.concat(path, ".") .. method .. table.concat(parts, "|")
+
+            for _, c in ipairs(_G.RobinBuyCalls) do
+              if c.sig == sig then
+                return
+              end
+            end
+
+            table.insert(_G.RobinBuyCalls, { sig = sig, path = path, method = method, list = list })
+            task.spawn(function()
+              warn("[RobinHub] learned buy: " .. text)
+              saveCalls()
+            end)
+          else
+            task.spawn(function()
+              warn("[RobinHub] ignored (not a shop call?): " .. text)
+            end)
+          end
+        end)
+      end
+
+      return old(self, ...)
+    end)
+  end)
+
+  local function remoteBuyAll()
+    local fired = 0
+
+    for _, c in ipairs(_G.RobinBuyCalls) do
+      local remote = resolve(c.path)
+
+      if remote then
+        for _ = 1, _G.AutoBuyMerchant.PerItem or 2 do
+          if not _G.AutoBuyMerchant.Enabled then
+            return fired
+          end
+
+          pcall(function()
+            if c.method == "InvokeServer" then
+              remote:InvokeServer(table.unpack(c.list, 1, #c.list))
+            else
+              remote:FireServer(table.unpack(c.list, 1, #c.list))
+            end
+          end)
+
+          fired = fired + 1
+          task.wait(0.2)
+        end
+      end
+    end
+
+    return fired
+  end
+
+  -- remote mode when buys were learned, otherwise press the shop's buttons
+  local lastRemote = 0
+
+  local function buyAll()
+    if #_G.RobinBuyCalls > 0 then
+      if tick() - lastRemote < (_G.AutoBuyMerchant.RemoteInterval or 20) then
+        return 0
+      end
+
+      lastRemote = tick()
+      return remoteBuyAll()
+    end
+
+    return uiBuyAll()
+  end
+
+  _G.RobinBuyMerchant = function()
+    lastRemote = 0
+    return buyAll()
+  end
+
+  _G.RobinDumpMerchant = function()
+    local lines = {}
+    local pg = localPlayer:FindFirstChild("PlayerGui")
+
+    if pg then
+      for _, d in ipairs(pg:GetDescendants()) do
+        local low = string.lower(d:GetFullName())
+
+        if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text ~= ""
+          and (low:find("merchant") or low:find("shop") or d.Text:find("Stock") or d.Text:find("Potion")) then
+          lines[#lines + 1] = d.ClassName .. "  " .. d:GetFullName() .. "  =  " .. d.Text
+        end
+      end
+    end
+
+    local text = table.concat(lines, "\n")
+    warn(text)
+
+    if setclipboard then
+      pcall(setclipboard, text)
+    end
+
+    return text
+  end
+
+  task.spawn(function()
+    while true do
+      if _G.AutoBuyMerchant.Enabled then
+        pcall(buyAll)
+        task.wait(_G.AutoBuyMerchant.CheckInterval or 3)
+      else
+        task.wait(1)
+      end
+    end
+  end)
+end
+-- ===== end auto buy potion merchant =====
+
 -- ===== auto save / load config =====
 -- Settings are saved to  RobinHub/config.json  (in your executor's workspace folder)
 -- and loaded again the next time you execute. Needs writefile / readfile / isfile.
@@ -1644,6 +2028,8 @@ do
 
     { "AutoPotion", "Enabled", "boolean" },
     { "AutoPotion", "UseAll", "boolean" },
+
+    { "AutoBuyMerchant", "Enabled", "boolean" },
   }
 
   local function snapshot()
@@ -3345,6 +3731,124 @@ do
     TextYAlignment = Enum.TextYAlignment.Top,
     Parent = potionCard,
   })
+end
+
+do
+  f1("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 22),
+    BackgroundTransparency = 1,
+    Text = "POTION MERCHANT",
+    Font = gothamBold,
+    TextSize = 11,
+    TextColor3 = v2.textDim,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = parent18,
+  })
+
+  local merchantCard = f1("Frame", {
+    Size = UDim2.new(1, 0, 0, 0),
+    BackgroundColor3 = Color3.fromRGB(28, 28, 28),
+    BorderSizePixel = 0,
+    AutomaticSize = Enum.AutomaticSize.Y,
+    Parent = parent18,
+  })
+
+  f2(merchantCard, 6)
+  f3(merchantCard, v2.border, 1)
+
+  f1("UIListLayout", {
+    Padding = UDim.new(0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Parent = merchantCard,
+  })
+
+  f4(merchantCard, 12)
+
+  local merchantRow = f1("Frame", {
+    Size = UDim2.new(1, 0, 0, 30),
+    BackgroundTransparency = 1,
+    Parent = merchantCard,
+  })
+
+  f1("TextLabel", {
+    Size = UDim2.new(1, -80, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "Auto Buy All",
+    Font = gothamBold,
+    TextSize = 13,
+    TextColor3 = v2.white,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = merchantRow,
+  })
+
+  f28(f1("Frame", {
+    Size = UDim2.new(0, 50, 1, 0),
+    Position = UDim2.new(1, -50, 0, 0),
+    BackgroundTransparency = 1,
+    Parent = merchantRow,
+  }), _G.AutoBuyMerchant.Enabled == true, function(enabled) _G.AutoBuyMerchant.Enabled = enabled end)
+
+  f1("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 40),
+    BackgroundTransparency = 1,
+    Text = "Buys every item in the Potion Merchant with Potion Tokens, and again after each restock.",
+    Font = gothamMedium,
+    TextSize = 10,
+    TextColor3 = v2.textMute,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    Parent = merchantCard,
+  })
+
+  local learnBtn = f1("TextButton", {
+    Size = UDim2.new(1, 0, 0, 26),
+    BackgroundColor3 = v2.panel,
+    BorderSizePixel = 0,
+    Text = "LEARN BUY: OFF",
+    Font = gothamBold,
+    TextSize = 12,
+    TextColor3 = v2.white,
+    AutoButtonColor = false,
+    Parent = merchantCard,
+  })
+
+  f2(learnBtn, 4)
+  f3(learnBtn, v2.border, 1)
+
+  local learnStatus = f1("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundTransparency = 1,
+    Text = "",
+    Font = gothamMedium,
+    TextSize = 10,
+    TextColor3 = v2.textMute,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    Parent = merchantCard,
+  })
+
+  local function refreshLearn()
+    learnBtn.Text = _G.RobinLearnBuy and "LEARN BUY: ON  (buy 1 of each item now)" or "LEARN BUY: OFF"
+    learnBtn.TextColor3 = _G.RobinLearnBuy and v2.accent or v2.white
+
+    local n = #(_G.RobinBuyCalls or {})
+    learnStatus.Text = n > 0 and ("Learned " .. n .. " buy call(s): works with the shop closed.")
+      or "Nothing learned yet: using the shop window buttons (shop must have been opened)."
+  end
+
+  learnBtn.MouseButton1Click:Connect(function()
+    _G.RobinLearnBuy = not _G.RobinLearnBuy
+    refreshLearn()
+  end)
+
+  task.spawn(function()
+    while true do
+      refreshLearn()
+      task.wait(1)
+    end
+  end)
 end
 
 f1("TextLabel", {
