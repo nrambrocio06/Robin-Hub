@@ -1577,16 +1577,28 @@ do
     return items and items:FindFirstChild("UseItem")
   end
 
-  -- "x7" / "X 7" / "7x" / "x1,200" / "x1.5K" -> number
-  local function parseAmount(text)
-    text = string.gsub(text, "[%s,]", "")
+  local cachedScroller = nil
 
-    local num, suffix = string.match(text, "^[xX]([%d%.]+)([KkMm]?)$")
-
-    if not num then
-      num, suffix = string.match(text, "^([%d%.]+)([KkMm]?)[xX]$")
+  local function getPotionScroller()
+    if cachedScroller and cachedScroller.Parent then
+      return cachedScroller
     end
 
+    cachedScroller = nil
+
+    local node = localPlayer:FindFirstChild("PlayerGui")
+
+    for _, name in ipairs({ "Main", "Frames", "Inventory", "Content", "Holder", "NormalContent", "Slots", "Scroller" }) do
+      node = node and node:FindFirstChild(name)
+    end
+
+    cachedScroller = node
+    return node
+  end
+
+  -- "x7" -> 7, "x1.5K" -> 1500
+  local function parseAmount(text)
+    local num, suffix = string.match(text, "^x([%d%.]+)([KkMm]?)$")
     local n = num and tonumber(num)
 
     if not n then
@@ -1600,106 +1612,6 @@ do
     end
 
     return math.floor(n)
-  end
-
-  local cachedScroller = nil
-  local nextSearch = 0
-
-  -- true if this container has at least one slot with a potion name AND an "x7"-style amount
-  -- (this is what tells the real inventory apart from the merchant shop list)
-  local function looksLikeInventory(container)
-    for _, slot in ipairs(container:GetChildren()) do
-      local hasName, hasAmount = false, false
-
-      for _, d in ipairs(slot:GetDescendants()) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-          local text = d.Text
-
-          if text and text ~= "" then
-            if parseAmount(text) then
-              hasAmount = true
-            elseif string.find(string.lower(text), "potion", 1, true) then
-              hasName = true
-            end
-          end
-        end
-      end
-
-      if hasName and hasAmount then
-        return true
-      end
-    end
-
-    return false
-  end
-
-  -- fallback when the game's UI path changed: find the container that holds the potion slots
-  local function searchScroller()
-    local pg = localPlayer:FindFirstChild("PlayerGui")
-
-    if not pg then
-      return nil
-    end
-
-    for _, d in ipairs(pg:GetDescendants()) do
-      if d:IsA("TextLabel") and string.find(string.lower(d.Text), "potion", 1, true) then
-        local full = string.lower(d:GetFullName())
-
-        if not (string.find(full, "merchant", 1, true) or string.find(full, "shop", 1, true)) then
-          local node = d.Parent
-
-          while node and node ~= pg do
-            local parent = node.Parent
-
-            if parent and (parent:IsA("ScrollingFrame")
-              or parent:FindFirstChildOfClass("UIGridLayout")
-              or parent:FindFirstChildOfClass("UIListLayout")) then
-              if looksLikeInventory(parent) then
-                return parent
-              end
-            end
-
-            node = parent
-          end
-        end
-      end
-    end
-
-    return nil
-  end
-
-  local function getPotionScroller()
-    if cachedScroller and cachedScroller.Parent then
-      return cachedScroller
-    end
-
-    cachedScroller = nil
-
-    -- 1) the known path
-    local node = localPlayer:FindFirstChild("PlayerGui")
-
-    for _, name in ipairs({ "Main", "Frames", "Inventory", "Content", "Holder", "NormalContent", "Slots", "Scroller" }) do
-      node = node and node:FindFirstChild(name)
-    end
-
-    if node and looksLikeInventory(node) then
-      cachedScroller = node
-      return node
-    end
-
-    -- 2) search for it (at most every 15 seconds, scanning the whole gui is heavy)
-    if tick() >= nextSearch then
-      nextSearch = tick() + 15
-      cachedScroller = searchScroller()
-
-      if cachedScroller then
-        dbg("found", "inventory found at " .. cachedScroller:GetFullName(), 0)
-        return cachedScroller
-      end
-    end
-
-    -- 3) old behaviour: the known path even if no potion slot is visible right now
-    return node
   end
 
   -- every potion slot in the inventory: { id, name, amount }
@@ -1802,16 +1714,7 @@ do
       return
     end
 
-    local potions = readPotions(scroller)
-
-    if #potions == 0 then
-      -- wrong container or none owned: look again next round
-      cachedScroller = nil
-      dbg("empty", "no potion slots read from " .. scroller:GetFullName() .. " (none owned, or the inventory UI changed)", 60)
-      return
-    end
-
-    for _, p in ipairs(potions) do
+    for _, p in ipairs(readPotions(scroller)) do
       local last = drained[p.id]
       local skip = false
 
@@ -1880,6 +1783,445 @@ do
 end
 -- ===== end auto potion =====
 
+-- ===== auto buy potion merchant =====
+-- Buys everything in the Potion Merchant shop every time it has stock (and again after each restock).
+-- It presses the shop's own "Potion Tokens" buy buttons, reading the "Stock: x/y" label of each row,
+-- so it works without knowing the shop's remote name.
+--   _G.RobinBuyMerchant()   run one buy pass right now
+--   _G.RobinDumpMerchant()  prints/copies the merchant UI paths (send me this if buying doesn't work)
+do
+  _G.AutoBuyMerchant = {
+    Enabled = false,
+    CheckInterval = 3,  -- seconds between checks (also catches the restock)
+    ClickDelay = 0.4,   -- seconds between buys of the same item
+    Debug = true,       -- prints a short line when it buys / something is wrong
+  }
+
+  local failedUntil = setmetatable({}, { __mode = "k" })
+  local lastDbg = {}
+
+  local function dbg(key, msg, every)
+    if _G.AutoBuyMerchant.Debug == false then
+      return
+    end
+
+    local now = tick()
+
+    if now - (lastDbg[key] or 0) >= (every or 0) then
+      lastDbg[key] = now
+      warn("[RobinHub] merchant: " .. msg)
+    end
+  end
+
+  local function lowerText(o)
+    local t = ""
+
+    if o:IsA("TextButton") or o:IsA("TextLabel") then
+      t = o.Text
+    end
+
+    return string.lower(t)
+  end
+
+  local function readStock(container)
+    for _, d in ipairs(container:GetDescendants()) do
+      if d:IsA("TextLabel") then
+        local cur, max = string.match(d.Text, "[Ss]tock:%s*(%d+)%s*/%s*(%d+)")
+
+        if cur then
+          return tonumber(cur), tonumber(max)
+        end
+      end
+    end
+
+    return nil
+  end
+
+  -- the merchant window = first ancestor of the "Potion Merchant" title that contains stock labels
+  local function findWindow()
+    local pg = localPlayer:FindFirstChild("PlayerGui")
+
+    if not pg then
+      return nil
+    end
+
+    for _, d in ipairs(pg:GetDescendants()) do
+      if d:IsA("TextLabel") and d.Text == "Potion Merchant" then
+        local node = d.Parent
+
+        while node and node ~= pg do
+          if readStock(node) then
+            return node
+          end
+
+          node = node.Parent
+        end
+      end
+    end
+
+    return nil
+  end
+
+  -- scanning the whole PlayerGui is heavy (lag), so remember the window and look for it
+  -- again at most every 10 seconds
+  local cachedWindow = nil
+  local nextFind = 0
+
+  local function getWindow()
+    if cachedWindow and cachedWindow.Parent then
+      return cachedWindow
+    end
+
+    cachedWindow = nil
+
+    if tick() < nextFind then
+      return nil
+    end
+
+    nextFind = tick() + 10
+    cachedWindow = findWindow()
+    return cachedWindow
+  end
+
+  -- every buy button in the window with the row that holds its stock label
+  local function findRows(window)
+    local rows = {}
+
+    for _, btn in ipairs(window:GetDescendants()) do
+      if btn:IsA("GuiButton") then
+        local text = lowerText(btn)
+
+        for _, d in ipairs(btn:GetDescendants()) do
+          text = text .. " " .. lowerText(d)
+        end
+
+        if string.find(text, "token", 1, true) then
+          local row = btn.Parent
+
+          while row and row ~= window and not readStock(row) do
+            row = row.Parent
+          end
+
+          if row and row ~= window then
+            rows[#rows + 1] = { button = btn, row = row }
+          end
+        end
+      end
+    end
+
+    return rows
+  end
+
+  local function press(btn)
+    for _, ev in ipairs({ "Activated", "MouseButton1Click" }) do
+      if getconnections then
+        local ok, conns = pcall(getconnections, btn[ev])
+
+        if ok and conns and #conns > 0 then
+          for _, c in ipairs(conns) do
+            pcall(function() c:Fire() end)
+          end
+
+          return true
+        end
+      end
+    end
+
+    if firesignal then
+      return pcall(firesignal, btn.Activated) or pcall(firesignal, btn.MouseButton1Click)
+    end
+
+    return false
+  end
+
+  -- returns: bought, attempted  (attempted = false means there was nothing to try buying)
+  local function uiBuyAll()
+    local window = getWindow()
+
+    if not window then
+      dbg("nowin", "Potion Merchant window not found (open the shop once, or use LEARN mode)", 60)
+      return 0, false
+    end
+
+    local bought = 0
+    local attempted = false
+
+    for _, r in ipairs(findRows(window)) do
+      if not (failedUntil[r.button] and tick() < failedUntil[r.button]) then
+        local stock = readStock(r.row) or 0
+        local guard = 0
+
+        while stock > 0 and _G.AutoBuyMerchant.Enabled and guard < 20 do
+          guard = guard + 1
+          attempted = true
+
+          if not press(r.button) then
+            failedUntil[r.button] = tick() + 30
+            dbg("press", "could not press a buy button (executor needs getconnections or firesignal)", 60)
+            break
+          end
+
+          task.wait(_G.AutoBuyMerchant.ClickDelay or 0.4)
+
+          local newStock = readStock(r.row) or 0
+
+          if newStock >= stock then
+            -- nothing changed: probably not enough Potion Tokens, retry in 30s
+            failedUntil[r.button] = tick() + 30
+            dbg("nochange", "buying did not change the stock (not enough Potion Tokens?), retrying in 30s", 30)
+            break
+          end
+
+          bought = bought + (stock - newStock)
+          stock = newStock
+        end
+      end
+    end
+
+    if bought > 0 then
+      dbg("bought", "bought " .. bought .. " item(s)", 0)
+    end
+
+    return bought, attempted
+  end
+
+  -- ===== remote mode (works with the shop CLOSED) =====
+  -- Turn on LEARN, buy 1 of each item by hand once, turn LEARN off. The script remembers those
+  -- buy calls (saved to RobinHub/merchant_buy.json) and replays them for every restock,
+  -- no shop window needed.
+  local httpService = game:GetService("HttpService")
+  local BUY_FILE = "RobinHub/merchant_buy.json"
+  local KEYWORDS = { "shop", "merchant", "buy", "purchase", "store", "potion" }
+
+  _G.AutoBuyMerchant.PerItem = 2      -- buys per item per cycle (the stock you see is 2/2)
+  _G.AutoBuyMerchant.RemoteInterval = 20 -- seconds between cycles in remote mode
+  _G.RobinBuyCalls = _G.RobinBuyCalls or {} -- { path = {...}, method = "FireServer", list = {...} }
+  _G.RobinLearnBuy = false
+
+  local function pathOf(inst)
+    local t, n = {}, inst
+
+    while n and n ~= game do
+      table.insert(t, 1, n.Name)
+      n = n.Parent
+    end
+
+    return t
+  end
+
+  local function resolve(path)
+    local n = game
+
+    for _, name in ipairs(path) do
+      n = n and n:FindFirstChild(name)
+    end
+
+    return n
+  end
+
+  local function saveCalls()
+    if type(writefile) ~= "function" then
+      return
+    end
+
+    pcall(function()
+      if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("RobinHub") then
+        makefolder("RobinHub")
+      end
+
+      writefile(BUY_FILE, httpService:JSONEncode(_G.RobinBuyCalls))
+    end)
+  end
+
+  pcall(function()
+    if type(isfile) == "function" and isfile(BUY_FILE) then
+      local data = httpService:JSONDecode(readfile(BUY_FILE))
+
+      if type(data) == "table" then
+        _G.RobinBuyCalls = data
+      end
+    end
+  end)
+
+  _G.RobinClearBuy = function()
+    _G.RobinBuyCalls = {}
+    saveCalls()
+  end
+
+  pcall(function()
+    if not (hookmetamethod and getnamecallmethod) then
+      return
+    end
+
+    local old
+    old = hookmetamethod(game, "__namecall", function(self, ...)
+      local method = getnamecallmethod()
+
+      if _G.RobinLearnBuy and (method == "FireServer" or method == "InvokeServer")
+        and not (checkcaller and checkcaller()) then
+        local args = table.pack(...)
+
+        pcall(function()
+          if typeof(self) ~= "Instance" then
+            return
+          end
+
+          local list, simple, hay = {}, true, string.lower(self:GetFullName())
+
+          for i = 1, args.n do
+            local t = type(args[i])
+
+            if t ~= "string" and t ~= "number" and t ~= "boolean" then
+              simple = false
+            else
+              list[i] = args[i]
+
+              if t == "string" then
+                hay = hay .. " " .. string.lower(args[i])
+              end
+            end
+          end
+
+          local match = false
+
+          for _, k in ipairs(KEYWORDS) do
+            if string.find(hay, k, 1, true) then
+              match = true
+            end
+          end
+
+          local parts = {}
+
+          for i = 1, args.n do
+            parts[i] = tostring(args[i])
+          end
+
+          local text = self:GetFullName() .. "(" .. table.concat(parts, ", ") .. ")"
+
+          if match and simple then
+            local path = pathOf(self)
+            local sig = table.concat(path, ".") .. method .. table.concat(parts, "|")
+
+            for _, c in ipairs(_G.RobinBuyCalls) do
+              if c.sig == sig then
+                return
+              end
+            end
+
+            table.insert(_G.RobinBuyCalls, { sig = sig, path = path, method = method, list = list })
+            task.spawn(function()
+              warn("[RobinHub] learned buy: " .. text)
+              saveCalls()
+            end)
+          else
+            task.spawn(function()
+              warn("[RobinHub] ignored (not a shop call?): " .. text)
+            end)
+          end
+        end)
+      end
+
+      return old(self, ...)
+    end)
+  end)
+
+  local function remoteBuyAll()
+    local fired = 0
+
+    for _, c in ipairs(_G.RobinBuyCalls) do
+      local remote = resolve(c.path)
+
+      if remote then
+        for _ = 1, _G.AutoBuyMerchant.PerItem or 2 do
+          if not _G.AutoBuyMerchant.Enabled then
+            return fired
+          end
+
+          pcall(function()
+            if c.method == "InvokeServer" then
+              remote:InvokeServer(table.unpack(c.list, 1, #c.list))
+            else
+              remote:FireServer(table.unpack(c.list, 1, #c.list))
+            end
+          end)
+
+          fired = fired + 1
+          task.wait(0.2)
+        end
+      end
+    end
+
+    return fired
+  end
+
+  -- remote mode when buys were learned, otherwise press the shop's buttons
+  local lastRemote = 0
+
+  local function buyAll()
+    if #_G.RobinBuyCalls > 0 then
+      if tick() - lastRemote < (_G.AutoBuyMerchant.RemoteInterval or 20) then
+        return 0
+      end
+
+      lastRemote = tick()
+      local fired = remoteBuyAll()
+      dbg("remote", "replayed the learned buy calls (" .. fired .. " call(s))", 60)
+      return fired, true
+    end
+
+    return uiBuyAll()
+  end
+
+  _G.RobinBuyMerchant = function()
+    lastRemote = 0
+    return buyAll()
+  end
+
+  _G.RobinDumpMerchant = function()
+    local lines = {}
+    local pg = localPlayer:FindFirstChild("PlayerGui")
+
+    if pg then
+      for _, d in ipairs(pg:GetDescendants()) do
+        local low = string.lower(d:GetFullName())
+
+        if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text ~= ""
+          and (low:find("merchant") or low:find("shop") or d.Text:find("Stock") or d.Text:find("Potion")) then
+          lines[#lines + 1] = d.ClassName .. "  " .. d:GetFullName() .. "  =  " .. d.Text
+        end
+      end
+    end
+
+    local text = table.concat(lines, "\n")
+    warn(text)
+
+    if setclipboard then
+      pcall(setclipboard, text)
+    end
+
+    return text
+  end
+
+  task.spawn(function()
+    while true do
+      if _G.AutoBuyMerchant.Enabled then
+        local ok, _, attempted = pcall(buyAll)
+        local delay = _G.AutoBuyMerchant.CheckInterval or 3
+
+        -- nothing to buy right now (sold out / no tokens / shop not found): check less often
+        if ok and attempted == false then
+          delay = math.max(delay, 15)
+        end
+
+        task.wait(delay)
+      else
+        task.wait(1)
+      end
+    end
+  end)
+end
+-- ===== end auto buy potion merchant =====
+
 -- ===== auto save / load config =====
 -- Settings are saved to  RobinHub/config.json  (in your executor's workspace folder)
 -- and loaded again the next time you execute. Needs writefile / readfile / isfile.
@@ -1927,6 +2269,7 @@ do
     { "AutoPotion", "Enabled", "boolean" },
     { "AutoPotion", "UseAll", "boolean" },
 
+    { "AutoBuyMerchant", "Enabled", "boolean" },
   }
 
   local function snapshot()
@@ -2257,25 +2600,6 @@ local parent7 = f1("Frame", {
   BackgroundTransparency = 1,
   Parent = v36,
 })
-
--- minimize button: collapse the window down to just the title bar and back
-local minimized = false
-local fullSize = v36.Size
-
-v40.MouseButton1Click:Connect(function()
-  minimized = not minimized
-
-  if minimized then
-    fullSize = v36.Size
-    parent7.Visible = false
-    v36.Size = UDim2.new(fullSize.X.Scale, fullSize.X.Offset, 0, 28)
-    v40.Text = "+"
-  else
-    v36.Size = fullSize
-    parent7.Visible = true
-    v40.Text = "-"
-  end
-end)
 
 local parent8 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 26),
@@ -3649,6 +3973,124 @@ do
   })
 end
 
+do
+  f1("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 22),
+    BackgroundTransparency = 1,
+    Text = "POTION MERCHANT",
+    Font = gothamBold,
+    TextSize = 11,
+    TextColor3 = v2.textDim,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = parent18,
+  })
+
+  local merchantCard = f1("Frame", {
+    Size = UDim2.new(1, 0, 0, 0),
+    BackgroundColor3 = Color3.fromRGB(28, 28, 28),
+    BorderSizePixel = 0,
+    AutomaticSize = Enum.AutomaticSize.Y,
+    Parent = parent18,
+  })
+
+  f2(merchantCard, 6)
+  f3(merchantCard, v2.border, 1)
+
+  f1("UIListLayout", {
+    Padding = UDim.new(0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Parent = merchantCard,
+  })
+
+  f4(merchantCard, 12)
+
+  local merchantRow = f1("Frame", {
+    Size = UDim2.new(1, 0, 0, 30),
+    BackgroundTransparency = 1,
+    Parent = merchantCard,
+  })
+
+  f1("TextLabel", {
+    Size = UDim2.new(1, -80, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "Auto Buy All",
+    Font = gothamBold,
+    TextSize = 13,
+    TextColor3 = v2.white,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = merchantRow,
+  })
+
+  f28(f1("Frame", {
+    Size = UDim2.new(0, 50, 1, 0),
+    Position = UDim2.new(1, -50, 0, 0),
+    BackgroundTransparency = 1,
+    Parent = merchantRow,
+  }), _G.AutoBuyMerchant.Enabled == true, function(enabled) _G.AutoBuyMerchant.Enabled = enabled end)
+
+  f1("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 40),
+    BackgroundTransparency = 1,
+    Text = "Buys every item in the Potion Merchant with Potion Tokens, and again after each restock.",
+    Font = gothamMedium,
+    TextSize = 10,
+    TextColor3 = v2.textMute,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    Parent = merchantCard,
+  })
+
+  local learnBtn = f1("TextButton", {
+    Size = UDim2.new(1, 0, 0, 26),
+    BackgroundColor3 = v2.panel,
+    BorderSizePixel = 0,
+    Text = "LEARN BUY: OFF",
+    Font = gothamBold,
+    TextSize = 12,
+    TextColor3 = v2.white,
+    AutoButtonColor = false,
+    Parent = merchantCard,
+  })
+
+  f2(learnBtn, 4)
+  f3(learnBtn, v2.border, 1)
+
+  local learnStatus = f1("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundTransparency = 1,
+    Text = "",
+    Font = gothamMedium,
+    TextSize = 10,
+    TextColor3 = v2.textMute,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    Parent = merchantCard,
+  })
+
+  local function refreshLearn()
+    learnBtn.Text = _G.RobinLearnBuy and "LEARN BUY: ON  (buy 1 of each item now)" or "LEARN BUY: OFF"
+    learnBtn.TextColor3 = _G.RobinLearnBuy and v2.accent or v2.white
+
+    local n = #(_G.RobinBuyCalls or {})
+    learnStatus.Text = n > 0 and ("Learned " .. n .. " buy call(s): works with the shop closed.")
+      or "Nothing learned yet: using the shop window buttons (shop must have been opened)."
+  end
+
+  learnBtn.MouseButton1Click:Connect(function()
+    _G.RobinLearnBuy = not _G.RobinLearnBuy
+    refreshLearn()
+  end)
+
+  task.spawn(function()
+    while true do
+      refreshLearn()
+      task.wait(1)
+    end
+  end)
+end
+
 f1("TextLabel", {
   Size = UDim2.new(1, 0, 0, 22),
   BackgroundTransparency = 1,
@@ -4068,3 +4510,268 @@ local function getWindowPos(screen)
 end
 
 -- narrower sidebar when the window is narrow (phones in portrait)
+local function applyLayout()
+  parent8.Size = UDim2.new(1, 0, 0, 26)
+  parent9.Position = UDim2.new(0, 0, 0, 26)
+  parent9.Size = UDim2.new(1, 0, 1, -26)
+end
+
+-- keep the main window fully on screen (also handles rotation / small screens)
+local function fitWindow()
+  local screen = getScreen()
+  local size = getWindowSize()
+  local pos = getWindowPos(screen)
+  local w = math.min(size.X, screen.X - PAD_SIDE * 2)
+  local h = math.min(size.Y, screen.Y - PAD_TOP - PAD_BOTTOM)
+  local x = math.clamp(pos.X, PAD_SIDE, math.max(PAD_SIDE, screen.X - w - PAD_SIDE))
+  local y = math.clamp(pos.Y, PAD_TOP, math.max(PAD_TOP, screen.Y - h - PAD_BOTTOM))
+  v36.Size = UDim2.fromOffset(w, h)
+  v36.Position = UDim2.fromOffset(x, y)
+  applyLayout()
+end
+
+local function makeResizeHandle(name, size, pos, mode)
+  local handle = f1("TextButton", {
+    Name = name,
+    Size = size,
+    Position = pos,
+    BackgroundTransparency = 1,
+    Text = "",
+    AutoButtonColor = false,
+    ZIndex = 50,
+    Parent = v36,
+  })
+
+  handle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+      or input.UserInputType == Enum.UserInputType.Touch then
+      resizing = true
+      resizeMode = mode
+      resizeStart = input.Position
+      startSize = getWindowSize()
+
+      input.Changed:Connect(function()
+        if input.UserInputState == Enum.UserInputState.End then
+          resizing = false
+        end
+      end)
+    end
+  end)
+
+  return handle
+end
+
+-- bigger touch targets on mobile
+local EDGE = isTouch and 16 or 6
+local GRIP = isTouch and 34 or 18
+
+makeResizeHandle("ResizeR", UDim2.new(0, EDGE, 1, -(28 + GRIP)), UDim2.new(1, -EDGE, 0, 28), "x")
+makeResizeHandle("ResizeB", UDim2.new(1, -GRIP, 0, EDGE), UDim2.new(0, 0, 1, -EDGE), "y")
+makeResizeHandle("ResizeXY", UDim2.fromOffset(GRIP, GRIP), UDim2.new(1, -GRIP, 1, -GRIP), "xy")
+
+-- small visible grip in the corner so people know where to drag
+for i = 1, 3 do
+  f1("Frame", {
+    Size = UDim2.fromOffset(i * 4, 1),
+    Position = UDim2.new(1, -3 - i * 4, 1, -3 - (4 - i) * 4),
+    BackgroundColor3 = v2.textDim,
+    BorderSizePixel = 0,
+    ZIndex = 51,
+    Parent = v36,
+  })
+end
+
+userInputService.InputChanged:Connect(function(input)
+  if resizing
+    and (input.UserInputType == Enum.UserInputType.MouseMovement
+      or input.UserInputType == Enum.UserInputType.Touch) then
+    local delta = input.Position - resizeStart
+    local screen = getScreen()
+    local pos = getWindowPos(screen)
+    local minW = math.min(MIN_W, screen.X - PAD_SIDE * 2)
+    local minH = math.min(MIN_H, screen.Y - PAD_TOP - PAD_BOTTOM)
+    local newW, newH = startSize.X, startSize.Y
+
+    if resizeMode == "x" or resizeMode == "xy" then
+      newW = math.clamp(startSize.X + delta.X, minW, math.max(minW, screen.X - pos.X - PAD_SIDE))
+    end
+
+    if resizeMode == "y" or resizeMode == "xy" then
+      newH = math.clamp(startSize.Y + delta.Y, minH, math.max(minH, screen.Y - pos.Y - PAD_BOTTOM))
+    end
+
+    v36.Size = UDim2.fromOffset(newW, newH)
+    applyLayout()
+  end
+end)
+
+-- on touch devices keep the window from being dragged off screen
+userInputService.InputEnded:Connect(function(input)
+  if isTouch and v36.Visible
+    and (input.UserInputType == Enum.UserInputType.Touch
+      or input.UserInputType == Enum.UserInputType.MouseButton1) then
+    fitWindow()
+  end
+end)
+
+-- fit to the screen now, and again when the screen changes (rotation etc.)
+fitWindow()
+v35:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+  if v36.Visible then fitWindow() end
+end)
+pcall(function()
+  local cam = workspace.CurrentCamera
+  if cam then
+    cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+      if v36.Visible then fitWindow() end
+    end)
+  end
+end)
+-- ===== end resizable window + mobile support =====
+
+local v125 = f1("TextButton", {
+  Name = "Mini",
+  Size = UDim2.fromOffset(190, 46),
+  Position = UDim2.new(0, 200, 0, 200),
+  BackgroundColor3 = v2.bg,
+  BorderSizePixel = 0,
+  Text = "",
+  AutoButtonColor = false,
+  Visible = false,
+  Parent = v35,
+})
+
+f3(v125, v2.border, 1)
+
+local v126 = f1("Frame", {
+  Size = UDim2.fromOffset(7, 7),
+  Position = UDim2.new(0, 42, 0.5, -3),
+  BackgroundColor3 = v2.accent,
+  BorderSizePixel = 0,
+  Parent = v125,
+})
+
+f2(v126, 4)
+
+f1("TextLabel", {
+  Size = UDim2.new(0, 60, 1, 0),
+  Position = UDim2.new(0, 56, 0, 0),
+  BackgroundTransparency = 1,
+  Text = "ROBIN",
+  Font = gothamBold,
+  TextSize = 15,
+  TextColor3 = v2.white,
+  TextXAlignment = Enum.TextXAlignment.Left,
+  Parent = v125,
+})
+
+f1("TextLabel", {
+  Size = UDim2.new(0, 70, 1, 0),
+  Position = UDim2.new(0, 108, 0, 0),
+  BackgroundTransparency = 1,
+  Text = " HUB",
+  Font = gothamBold,
+  TextSize = 15,
+  TextColor3 = v2.accent,
+  TextXAlignment = Enum.TextXAlignment.Left,
+  Parent = v125,
+})
+
+task.spawn(function()
+  while v126.Parent do
+    tweenService:Create(v126, TweenInfo.new(0.8), { BackgroundTransparency = 0.6 }):Play()
+    task.wait(0.8)
+    tweenService:Create(v126, TweenInfo.new(0.8), { BackgroundTransparency = 0 }):Play()
+    task.wait(0.8)
+  end
+end)
+
+local v127 = false
+local v128 = false
+local miniStart, miniPos
+
+v125.InputBegan:Connect(function(input)
+  if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+    v127 = true
+    v128 = false
+    miniStart = input.Position
+    miniPos = v125.Position
+  end
+end)
+
+userInputService.InputChanged:Connect(function(input18)
+  if v127
+    and (input18.UserInputType == Enum.UserInputType.MouseMovement
+      or input18.UserInputType == Enum.UserInputType.Touch) then
+    local v129 = input18.Position - miniStart
+    local threshold = isTouch and 8 or 3
+
+    if math.abs(v129.X) > threshold or math.abs(v129.Y) > threshold then
+      v128 = true
+    end
+
+    v125.Position = UDim2.new(
+      miniPos.X.Scale, miniPos.X.Offset + v129.X, miniPos.Y.Scale,
+      miniPos.Y.Offset + v129.Y
+    )
+  end
+end)
+
+userInputService.InputEnded:Connect(function(input19)
+  if input19.UserInputType == Enum.UserInputType.MouseButton1
+    or input19.UserInputType == Enum.UserInputType.Touch then
+    if v127 then
+      if not v128 then
+        v36.Visible = true
+        v125.Visible = false
+        fitWindow()
+      else
+        -- keep the mini button on screen
+        local screen = getScreen()
+        local p = v125.Position
+        local x = p.X.Scale * screen.X + p.X.Offset
+        local y = p.Y.Scale * screen.Y + p.Y.Offset
+        v125.Position = UDim2.fromOffset(
+          math.clamp(x, 0, math.max(0, screen.X - v125.Size.X.Offset)),
+          math.clamp(y, 0, math.max(0, screen.Y - v125.Size.Y.Offset))
+        )
+      end
+    end
+
+    v127 = false
+  end
+end)
+
+v40.MouseButton1Click:Connect(function()
+  v36.Visible = false
+  v125.Visible = true
+end)
+
+v41.MouseButton1Click:Connect(function()
+  v36.Visible = false
+  v125.Visible = false
+  task.wait(1.5)
+  v35:Destroy()
+end)
+
+userInputService.InputBegan:Connect(function(input20, p43)
+  if p43 then
+    return
+  end
+
+  if input20.KeyCode == Enum.KeyCode.RightShift then
+    if v36.Visible then
+      v36.Visible = false
+      v125.Visible = true
+    else
+      v36.Visible = true
+      v125.Visible = false
+    end
+  end
+end)
+
+task.spawn(function()
+  task.wait(0.5)
+  v1("ROBIN is Ready")
+end)
