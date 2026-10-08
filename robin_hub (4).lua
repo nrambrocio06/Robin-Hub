@@ -2258,6 +2258,25 @@ local parent7 = f1("Frame", {
   Parent = v36,
 })
 
+-- minimize button: collapse the window down to just the title bar and back
+local minimized = false
+local fullSize = v36.Size
+
+v40.MouseButton1Click:Connect(function()
+  minimized = not minimized
+
+  if minimized then
+    fullSize = v36.Size
+    parent7.Visible = false
+    v36.Size = UDim2.new(fullSize.X.Scale, fullSize.X.Offset, 0, 28)
+    v40.Text = "+"
+  else
+    v36.Size = fullSize
+    parent7.Visible = true
+    v40.Text = "-"
+  end
+end)
+
 local parent8 = f1("Frame", {
   Size = UDim2.new(1, 0, 0, 26),
   BackgroundTransparency = 1,
